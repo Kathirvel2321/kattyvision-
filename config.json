@@ -1,0 +1,150 @@
+{
+  "_comment": "OCR / Court Filing Automation - master settings. Change values here, no code editing needed.",
+  "case": {
+    "name": "SAMPLE CASE",
+    "court": "Raigad District Court",
+    "bank_name": "",
+    "case_number": ""
+  },
+  "paths": {
+    "input": "C:\\Users\\ipvis\\Documents\\ocr",
+    "output": "C:\\Users\\ipvis\\Documents\\ocr\\output",
+    "work": "work",
+    "logs": "logs",
+    "stamp_image": "assets/stamp.png",
+    "tesseract_exe": "",
+    "ghostscript_exe": ""
+  },
+  "merge": {
+    "enabled": true,
+    "natural_sort": true,
+    "separator_blank_page": false,
+    "create_bookmarks": true,
+    "file_extensions": [
+      ".pdf",
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".tif",
+      ".tiff",
+      ".bmp"
+    ]
+  },
+  "cover_page": {
+    "enabled": false,
+    "title": "",
+    "subtitle": "Index of Documents",
+    "show_document_index": true,
+    "show_page_numbers_in_index": true
+  },
+  "ocr": {
+    "enabled": true,
+    "language": "eng",
+    "mode": "skip_text",
+    "jobs": 0,
+    "optimize": 1,
+    "jpeg_quality": 75,
+    "png_quality": 50,
+    "deskew": false,
+    "rotate_pages": false,
+    "force_full_page_ocr": false,
+    "oversample_dpi": 300,
+    "recheck_weak_pages": true,
+    "recheck_dpi": 0,
+    "timeout_minutes": 60
+  },
+  "compress": {
+    "enabled": true,
+    "engine": "adaptive",
+    "target_size_mb": 4.5,
+    "level": 2,
+    "levels_to_try": [
+      1,
+      2,
+      3
+    ],
+    "image_downsample_dpi": 150,
+    "grayscale_below_mb": 0
+  },
+  "quality": {
+    "preset": "balanced",
+    "text_dpi": 0,
+    "photo_dpi": 0,
+    "photo_quality": 0,
+    "gray_quality": 0,
+    "bitonal": true,
+    "threshold": 0,
+    "scrub_metadata": true
+  },
+  "pagination": {
+    "enabled": true,
+    "format": "Page {page} of {total}",
+    "position": "bottom-center",
+    "font": "helv",
+    "font_size": 9,
+    "margin_mm": 8,
+    "start_number": 1,
+    "skip_first_pages": 0,
+    "skip_last_pages": 0
+  },
+  "stamp": {
+    "enabled": true,
+    "image": "assets/stamp.png",
+    "pages": "all",
+    "position": "bottom-right",
+    "width_percent": 20,
+    "offset_x_mm": 12,
+    "offset_y_mm": 12,
+    "nudge_x_mm": 0,
+    "nudge_y_mm": 0,
+    "opacity": 0.85,
+    "image_rotation": 0,
+    "text": {
+      "enabled": false,
+      "lines": [],
+      "position": "top-right",
+      "font": "helv",
+      "font_size": 10,
+      "color": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "line_spacing": 13,
+      "width_percent": 38,
+      "offset_x_mm": 8,
+      "offset_y_mm": 14,
+      "date_format": "%d-%m-%Y",
+      "include_date": false
+    }
+  },
+  "split": {
+    "enabled": true,
+    "mode": "pages",
+    "max_pages_per_file": 42,
+    "max_size_mb": 0,
+    "keep_bookmark_boundaries": true,
+    "name_template": "{case}_Part{index:02d}.pdf"
+  },
+  "output": {
+    "final_name_template": "{case}_Final.pdf",
+    "write_report": true,
+    "write_report_pdf": false,
+    "keep_intermediate_files": false,
+    "open_output_folder": false
+  },
+  "runtime": {
+    "verbose": true,
+    "abort_on_error": false
+  },
+  "ui": {
+    "preset": "standard",
+    "recent_folders": [
+      "input\\SAMPLE CASE",
+      "C:\\Users\\ipvis\\Documents\\ocr\\input\\SAMPLE CASE",
+      "X:/demo"
+    ],
+    "geometry": "1275x975+322+35",
+    "tab": 1
+  }
+}

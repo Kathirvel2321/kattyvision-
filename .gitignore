@@ -1,0 +1,16 @@
+# Generated / working files
+work/*
+!work/.gitkeep
+logs/*
+!logs/.gitkeep
+output/*
+!output/.gitkeep
+input/*
+!input/.gitkeep
+
+# Sample material and caches created during testing
+input/SAMPLE CASE/
+assets/stamp.png
+__pycache__/
+*.pyc
+*.pyo

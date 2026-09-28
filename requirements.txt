@@ -1,0 +1,17 @@
+# Everything the automation needs. All free / open source, no subscription.
+#
+#   pip install -r requirements.txt
+#
+# Only two packages are needed - the whole pipeline (merge, OCR, compress,
+# paginate, stamp, split) runs on these plus the free Tesseract engine.
+pymupdf>=1.24.0      # PDF engine: merge, compress, page numbers, seal, split
+pillow>=10.0.0       # seal image preparation + placeholder seal drawing
+ttkbootstrap>=1.10   # modern flat theme for the desktop app (optional - the app
+                     # falls back to plain tkinter, which looks dated)
+
+# ---------------------------------------------------------------------------
+# Optional extras (not required)
+# ---------------------------------------------------------------------------
+# ocrmypdf>=16.0       # alternative OCR engine; still needs Ghostscript
+# ghostscript          # not a pip package - install the free app via SETUP.ps1
+tkinterdnd2>=0.4.0
