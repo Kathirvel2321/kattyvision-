@@ -16,7 +16,7 @@
 
 
 
-# Court Filing Automation (SARFAESI / Raigad court e-filing)
+# KattyVision — Court Filing Automation (SARFAESI / Raigad court e-filing)
 
 Replaces the manual prepare-and-upload routine with **one local program**.
 Everything runs on the office PC: **no upload, no iLovePDF premium, no waiting,
@@ -92,7 +92,7 @@ reading or writing case documents in someone else's user profile.
 1. Put the case documents in `input\<CASE NAME>\`
    (PDF, PNG, JPG or TIFF - sub-folders are fine, order is natural so
    `Exhibit 2` comes before `Exhibit 10`).
-2. Double-click **`Run Court OCR.bat`**.
+2. Double-click **`KattyVision.bat`** (or the KattyVision icon on the Desktop).
 3. Tick the steps, press **RUN**, wait for the log to say `FINISHED`.
 4. Finished files land in `output\<CASE NAME>\`.
 
@@ -204,11 +204,13 @@ config.json                  your settings (created by SETUP.ps1, safe to edit)
 SETUP.ps1                 one-time installer (Python packages + Tesseract)
 INSTALL.ps1               creates the Desktop / Start Menu icons
 UNINSTALL.ps1             removes those icons again (nothing else is touched)
-Run Court OCR.bat         double-click launcher for staff
+KattyVision.bat           double-click launcher for staff
+Run Court OCR.bat         old launcher name - kept as a small forwarder
 requirements.txt          two required Python packages (+ commented optionals)
 assets/                   app icon, logo, placeholder seal (real seal is NOT in git)
 court_ocr/
     app.py                desktop app:  python -m court_ocr.app
+    splash.py             the loading card shown while the app starts
     cli.py                command line: python -m court_ocr.cli
     gui.py                old alias - still opens the desktop app
     pipeline.py           runs the 8 steps and writes the report
@@ -220,6 +222,9 @@ court_ocr/
     util.py               small helpers (units, natural sort, safe names)
     logging_setup.py      console + file logging, step timers
 tools/make_sample_pdf.py  creates a fake case for practice
+tools/selftest.py         end-to-end run on a practice case
+tools/splash_tests.py     start-up / loading card checks
+tools/ui_tests.py         widget behaviour checks
 input/<CASE>/             drop the documents here
 output/<CASE>/            finished files + CSV report
 work/<CASE>/              intermediate files (auto-cleaned)

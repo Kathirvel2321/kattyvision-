@@ -140,11 +140,143 @@ filled; `tkdnd::drop_target info` confirms registrations.
 **Remaining (phase 3):** dark mode, before/after compare slider, taskbar progress,
 Marathi strings.
 
-## 7. Rules for whoever builds it
+## 7. Start-up pass: the loading card, the taskbar, and the scale (2026-09-29)
+
+Complaints received: *"the loading looks broken and sometimes looks frozen"*,
+*"my logo should be visible in the taskbar too"*, and *"the project name was
+kattyvision but it still shows court filing"*. All three were real. Everything
+below was **measured on the development machine**, not guessed.
+
+### 7.1 Why the loading screen looked broken
+
+| Evidence | Number |
+|---|---|
+| `App()` total - the period the main thread is busy | **1.86 s** |
+| of which `_build_layout()` | 0.54 s |
+| of which `_load_from_config()` | 0.74 s |
+| of which `_report_tools()` → `diagnose()` (runs `tesseract --version` as a subprocess, on the UI thread) | 0.14 s |
+| time to a *usable* window | 2.9 s |
+
+`App.__init__` builds every widget and asks Windows about the OCR engine
+**before Tk is allowed to run its event loop**, and the window is painted at
+Tk's default geometry until `_fit_to_screen()` runs near the very end. So the
+user saw, in order: a blank window → nothing happening for ~2 s (Windows paints
+"(Not Responding)" past 5 s on a slower PC) → a jump to the real size. That is
+what "broken" and "frozen" mean here; nothing had actually crashed.
+
+### 7.2 The fix
+
+* **`court_ocr/splash.py` (new)** - a borderless loading card: the wordmark's
+  navy as a painted vertical gradient, the brand mark on a soft rounded badge,
+  the name, the tagline, a live status line, the offline reassurance line, and a
+  progress bar whose fill eases towards the real value while a highlight sweeps
+  the whole track forever. Fade in, fade out, centred slightly above middle.
+  * Measured cost: **~220 ms** to appear - it must be on screen *before* the
+    slow part starts, or it has solved nothing.
+  * The sweep is the important part. Progress that pauses still looks alive,
+    which is the difference between "loading" and "frozen".
+  * `update_idletasks()`, never `update()`: draining the whole queue during
+    start-up re-runs Tk layout for every half-built widget and cost *more than
+    the build it was decorating*. Redraws are also capped at ~33 fps.
+  * `make_splash()` swallows every error and returns `_NullSplash` (same
+    interface). A cosmetic screen must never be why the app will not open.
+* **`App.__init__` is now a sequence of boot phases.** `withdraw()` the window,
+  show the card, `splash.step()` + `splash.pump()` between the four tabs and
+  between the six tool pages, then `deiconify()` at the final geometry. The
+  half-built window is now **never visible at all** - no blank rectangle, no
+  size jump.
+* **`_report_tools()` → `_check_tools_async()`.** `diagnose()` moved to a
+  worker thread; the result arrives through the existing `events` queue and is
+  applied by `_process_events()` on the UI thread (Tk widgets may only be
+  touched from the main thread). Start-up gives it a **bounded 0.9 s** so the
+  usual fast case is already applied before the window appears - a slow machine
+  is never made to wait for it.
+* `_process_events()` split out of `_drain_events()` so start-up can flush the
+  queue directly.
+
+Result: card on screen at **0.2-0.6 s**, finished window at ~2.2 s, and the
+process is never blocked on a subprocess.
+
+### 7.3 Why the taskbar said "Court Filing"
+
+Windows names a taskbar button after **the shortcut that launched the process**.
+This machine had **three** shortcuts for the identical command
+(`C:\Python314\pythonw.exe -m court_ocr.app`):
+
+```
+Court Filing Automation.lnk   <- old install
+PDF Helper.lnk                <- older install
+KattyVision.lnk               <- current
+```
+
+plus `Court Filing - Documents.lnk` on the Desktop, and `APP_ID` was itself
+`"KattyVision.CourtFiling.1"`. Whichever one was clicked decided the name.
+
+* `APP_ID` → **`KattyVision.Desktop.1`** - the identity string no longer carries
+  a working name.
+* `set_taskbar_identity()` moved into `main()`, **before any window exists**.
+  Windows fixes a process's taskbar identity when its *first* window appears;
+  calling it from `App.__init__` (i.e. after `super().__init__()`) was too late,
+  so the button was grouped under `pythonw.exe` and showed the Python icon.
+* `INSTALL.ps1` now stamps **`PKEY_AppUserModel_ID` (`KattyVision.Desktop.1`)** on
+  the Desktop and Start Menu shortcuts through `IPropertyStore` - the documented
+  way to own a taskbar identity. `WScript.Shell` has no property for it, which
+  is why no shortcut ever carried one.
+* `INSTALL.ps1` **deletes the stale shortcuts** (Desktop, Start Menu *and* the
+  pinned-to-taskbar folder) and the `Court Filing Automation` / `PDF Helper`
+  Start Menu folders. This is the part that actually makes the rename stick.
+* `INSTALL.ps1` built `assets/app.ico` with **`tools/make_icon.py`** - the *old
+  generic document-and-seal glyph* - on a fresh machine. `load_icon()` prefers
+  `app.ico`, and `app.ico` is the single file Windows takes the taskbar, window
+  and shortcut icon from, so a new install showed the wrong picture while the
+  app header showed the real brand mark. Now it uses **`make_brand_icon.py`**.
+* Documents folder link renamed `Court Filing - Documents` → `KattyVision - Documents`;
+  `UNINSTALL.ps1` updated to cover the new name.
+* `Run Court OCR.bat` → **`KattyVision.bat`** (its `title` command was putting
+  *Court Filing Automation* in the taskbar too). The old file is kept as a
+  three-line forwarder so an existing shortcut still works.
+* Console titles in `Install App.bat` and `SETUP.ps1` aligned with the brand.
+
+### 7.4 Two more bugs found while measuring
+
+* **`ui_kit.SCALE` was never set.** It is documented as *"app.py overwrites this
+  once the real display scale is known"* - it never did, so `SCALE` stayed `1.0`
+  while `tk scaling` and the window size both used the real `1.5`. On this
+  machine (150 %) every font was 1.5x but every padding stayed 1x, which is what
+  made the layout look cramped and broken. `ui_kit.set_scale()` now exists and is
+  called before the first widget is created (font metrics are frozen at creation,
+  so setting it later is not enough).
+  Proof: `brain/screenshot_before_hiDPI.png` vs `brain/screenshot_after_hiDPI.png`.
+* **The remembered window geometry was restored unclamped.** This machine had
+  `ui.geometry = "1920x974+322+35"` - Tk records a *maximised* window's
+  rectangle, so a 1920-wide window was being restored 322 px to the right of a
+  1920-wide screen: **the right-hand third of the interface off-screen on every
+  launch.** `_restore_geometry()` now clamps the size and position to the
+  current screen, refuses anything that looks maximised, and `_on_close()` no
+  longer saves a size while the window is zoomed.
+
+### 7.5 Checks
+
+`tools/splash_tests.py` (new, 27 checks): the card appears and is mapped, is
+cheap, animates while the caller is busy, closes cleanly and twice safely,
+falls back to a no-op stub if it cannot be drawn, the OCR check is off the UI
+thread, the scale is correct, and a remembered geometry cannot reopen off-screen.
+
+All suites re-run green: `selftest` 12/12 - `ui_tests` - `compress` 32/32 -
+`split` 22/22 - `ocr_safety_check` - `brand_flow_check` - `brand_controls_check`
+- `splash_tests` 27/27.
+
+## 8. Rules for whoever builds it
 
 1. Everything must run **offline**; no new heavy dependency (`tkinterdnd2` is the
    only optional one and the app must work without it).
 2. New widgets go inside the existing `ScrollFrame` pattern so tall content can
    never be cut off again.
-3. Never re-introduce fixed pixel geometry — use `_fit_to_screen()`.
+3. Never re-introduce fixed pixel geometry — use `_fit_to_screen()`, and any
+   geometry that comes back from storage must go through `_restore_geometry()`.
 4. Window screenshots (before/after) go into `brain/` as proof of the change.
+5. **Never do slow work in `App.__init__` without pumping the loading card.**
+   If a step is added to the boot, it gets a `splash.step()` before it.
+6. Keep the name in one place: `APP_NAME` for the window, `APP_ID` for the
+   taskbar, `$AppName` in `INSTALL.ps1`. Do not reintroduce working names
+   ("Court Filing…", "PDF Helper…") into any of them.

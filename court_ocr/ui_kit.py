@@ -235,6 +235,22 @@ def px(value: float) -> int:
     return max(1, int(round(value * SCALE)))
 
 
+def set_scale(value: float) -> None:
+    """Fix the display scale that :func:`px` multiplies by - call it once.
+
+    :mod:`court_ocr.app` calls this from ``main()``, before any window is built,
+    so every padding, gap and minimum size in the app grows with the monitor.
+
+    This used to be documented as happening automatically and in fact never did:
+    ``SCALE`` stayed at 1.0 on a 150 % display while Tk scaled every font by 1.5
+    and the window itself was sized by 1.5, so text was big and the space around
+    it was tiny.  That is what made the layout look cramped and "broken" on a
+    scaled laptop screen.
+    """
+    global SCALE
+    SCALE = max(1.0, min(float(value), 3.0))
+
+
 def contrast_foreground(background: str) -> str:
     """Pick black or white text for ``background`` using the WCAG formula."""
     try:
@@ -1871,6 +1887,9 @@ class PageNumberPreview(tk.Frame):
         self.format = "Page {page} of {total}"
         self.position = "bottom-right"
         self.font_size = 9.0
+        self.font = "helv"
+        self.style = "arabic"
+        self.start_number = 1
         self.enabled = True
         self.skip_first = 0
         self._photo = None
@@ -1886,7 +1905,10 @@ class PageNumberPreview(tk.Frame):
     def set_values(self, *, format: str | None = None,
                    position: str | None = None, font_size: float | None = None,
                    enabled: bool | None = None,
-                   skip_first: int | None = None) -> None:
+                   skip_first: int | None = None,
+                   start_number: int | None = None,
+                   font: str | None = None,
+                   style: str | None = None) -> None:
         if format is not None:
             self.format = str(format)
         if position is not None:
@@ -1897,6 +1919,12 @@ class PageNumberPreview(tk.Frame):
             self.enabled = bool(enabled)
         if skip_first is not None:
             self.skip_first = max(0, int(skip_first))
+        if start_number is not None:
+            self.start_number = max(1, int(start_number))
+        if font is not None:
+            self.font = str(font)
+        if style is not None:
+            self.style = str(style)
         self.redraw()
 
     def redraw(self) -> None:
@@ -1917,22 +1945,22 @@ class PageNumberPreview(tk.Frame):
                          color=(0.36, 0.42, 0.51))
 
         if self.enabled:
-            number = max(1, self.skip_first + 1)
+            number = self.start_number + self.skip_first
             total = max(1, 20 - self.skip_first)
             try:
                 text = self.format.format(
-                    page=_label(number, "arabic"),
-                    total=_label(total, "arabic"),
+                    page=_label(number, self.style),
+                    total=_label(total, self.style),
                     roman=_label(number, "ROMAN"),
                 )
             except (KeyError, ValueError, IndexError):
                 text = "Page 1 of 20"
-            width = pymupdf.get_text_length(text, fontname="helv",
+            width = pymupdf.get_text_length(text, fontname=self.font,
                                             fontsize=self.font_size) + 6
             height = max(self.font_size * 1.5, 14.0)
             rect = anchor_rect(page, width, height, self.position,
                                8 * 72 / 25.4, 4 * 72 / 25.4)
-            draw_text(page, rect, text, font="helv", font_size=self.font_size,
+            draw_text(page, rect, text, font=self.font, font_size=self.font_size,
                       color=(0, 0, 0), align=1)
             hint = f"Preview: {text} - {self.position.replace('-', ' ')}"
         else:

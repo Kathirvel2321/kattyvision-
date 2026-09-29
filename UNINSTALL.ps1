@@ -25,6 +25,7 @@ if ($running) {
 
 $targets = @(
     (Join-Path ([Environment]::GetFolderPath('Desktop')) "KattyVision.lnk"),
+    (Join-Path ([Environment]::GetFolderPath('Desktop')) "KattyVision - Documents.lnk"),
     (Join-Path ([Environment]::GetFolderPath('Desktop')) "PDF Helper.lnk"),
     (Join-Path ([Environment]::GetFolderPath('Desktop')) "PDF Helper - Documents.lnk"),
     (Join-Path ([Environment]::GetFolderPath('Programs')) "KattyVision.lnk"),

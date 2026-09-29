@@ -1,5 +1,5 @@
 <#
-    SETUP.ps1 - one time installer for the court filing automation.
+    SETUP.ps1 - one time installer for KattyVision (court filing automation).
 
     It installs ONLY things that must live outside Python:
         1. Python packages          : pymupdf, pillow   (fast, pure wheels)
@@ -32,7 +32,7 @@ function Write-Bad  { param($m) Write-Host "[ fail ] $m" -ForegroundColor Red }
 
 Write-Host ""
 Write-Host "===============================================================" -ForegroundColor Cyan
-Write-Host " Court filing automation - one time setup" -ForegroundColor Cyan
+Write-Host " KattyVision - one time setup" -ForegroundColor Cyan
 Write-Host "===============================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -224,7 +224,7 @@ Write-Host ""
 Write-Host " How to use it"
 Write-Host " -------------"
 Write-Host "  1. Put the case documents in the  input\<CASE NAME>\  folder."
-Write-Host "  2. Double click  'Run Court OCR.bat'  and press Run."
+Write-Host "  2. Double click  'KattyVision.bat'  and press Run."
 Write-Host "  3. Finished files appear in  output\<CASE NAME>\."
 Write-Host ""
 Write-Host " Command line alternative:"

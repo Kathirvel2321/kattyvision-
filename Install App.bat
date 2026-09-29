@@ -3,7 +3,7 @@ REM ===========================================================================
 REM  INSTALL - creates the desktop icon and Start Menu entry.
 REM  Double click this file once. Nothing else to do.
 REM ===========================================================================
-title Install - Court Filing Automation
+title Install - KattyVision
 
 cd /d "%~dp0"
 

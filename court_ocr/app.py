@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import sys
 import threading
+import time
 import tkinter as tk
 import traceback
 from dataclasses import dataclass, field
@@ -33,6 +35,7 @@ except ImportError:                      # graceful fall-back to stock ttk
 from .config import PROJECT_ROOT, Config
 from .logging_setup import get_logger, reset_logger
 from .pipeline import Pipeline
+from .splash import make_splash
 from .toolcheck import diagnose
 from .ui_kit import (ACCENT, ACCENT_SOFT, BG, BORDER, BORDER_STRONG, BODY, CAPTION,
                      CARD, Chip, ChipRow, ChoiceCard, ChoiceGroup, Disclosure,
@@ -40,12 +43,16 @@ from .ui_kit import (ACCENT, ACCENT_SOFT, BG, BORDER, BORDER_STRONG, BODY, CAPTI
                      IconButton, MUTED, OK, OK_SOFT, PageMap, SealPreview,
                      PageNumberPreview,
                      Segmented, Stepper, SURFACE, Switch, TEXT, TITLE, WARN,
-                     WARN_SOFT, WARN_TEXT, contrast_foreground, px)
+                     WARN_SOFT, WARN_TEXT, contrast_foreground, px, set_scale)
 from .util import MB, open_in_explorer
 
 APP_NAME = "KattyVision"
 APP_TAGLINE = "Less paperwork. More peace of mind."
-APP_ID = "KattyVision.CourtFiling.1"            # taskbar grouping identity
+#: Taskbar grouping identity.  It must not contain the old working names
+#: ("CourtFiling" / "PDFHelper"): Windows shows this string in the taskbar and
+#: in the jump list, so a stale name here is what kept the app looking like
+#: something other than KattyVision.
+APP_ID = "KattyVision.Desktop.1"
 APP_SIGNATURE = "Kathirvel"
 ASSETS = PROJECT_ROOT / "assets"
 
@@ -692,6 +699,8 @@ def _tool_paginate(paths, out_dir, opts, ctx) -> tuple[list, list]:
             fmt=str(opts.get("format", "Page {page} of {total}")),
             position=str(opts.get("position", "bottom-right")),
             font_size=float(opts.get("font_size", 9) or 9),
+            font=str(opts.get("font", "helv") or "helv"),
+            start_number=int(opts.get("start_number", 1) or 1),
             skip_first=int(opts.get("skip_first", 0) or 0),
             style=str(opts.get("style", "arabic") or "arabic"),
         )
@@ -876,6 +885,11 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
               ("bottom-left", "Bottom left"), ("top-right", "Top right"),
               ("top-center", "Top centre"), ("top-left", "Top left"))),
             ("int", "Font size", "font_size", 9, (6, 24)),
+            ("choice", "Font style", "font", "helv",
+             (("helv", "Helvetica"), ("hebo", "Helvetica Bold"),
+              ("tiro", "Times Roman"), ("tibo", "Times Bold"),
+              ("cour", "Courier"))),
+            ("int", "Start numbering from", "start_number", 1, (1, 1000)),
             ("int", "Leave the first N pages unnumbered", "skip_first", 0, (0, 20)),
             ("choice", "Number style", "style", "arabic",
              (("arabic", "1, 2, 3"), ("roman", "I, II, III"), ("alpha", "A, B, C"))),
@@ -1973,45 +1987,47 @@ class App(ttkb.Window if ttkb else tk.Tk):
             super().__init__(themename="flatly", alpha=1.0)
         else:
             super().__init__()
-        self.cfg = Config.load(config_path)
-        self.events: queue.Queue = queue.Queue()
-        self.worker: threading.Thread | None = None
-        self.report = None
-        self.last_output: Path | None = None
-        self.step_rows: dict[str, tuple[tk.Label, tk.Label]] = {}
-        self.step_state: dict[str, str] = {}
-        self.gs_path: str | None = None
-        self.cancel_flag = threading.Event()
-        self.run_started_at: datetime | None = None
 
-        set_taskbar_identity()
-        self.title(APP_NAME)
-        self.configure(background=BG)
-        apply_theme(self)
-        load_icon(self)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # ---- 1. scale for this display, before a single widget exists ------
+        #  Font metrics are frozen when a widget is created, so a window built
+        #  at scaling 1.0 and resized afterwards keeps the wrong text sizes for
+        #  ever.  Setting it here also makes ui_kit.px() - every padding, gap
+        #  and minimum height in the app - correct on the real monitor.
+        set_scale(UI_SCALE)
+        try:
+            self.tk.call("tk", "scaling", UI_SCALE * 96.0 / 72.0)
+        except tk.TclError:
+            pass
 
-        self.tool_pages: dict[str, "ToolPage"] = {}
-        self._make_variables()
-        self._build_layout()
-        self._load_from_config()
-        self._fit_to_screen()                      # fits + centres on this display
-        self._mark_all_steps("waiting", "not started")
-        self.after(120, self._drain_events)
-        self._report_tools()
+        # ---- 2. hide the window, show the loading card ---------------------
+        #  Building the workspace takes ~1.9 s (measured, and longer on a cold
+        #  or virus-scanned machine).  Without this the user watched a blank
+        #  window appear, sit completely unresponsive - Windows sometimes
+        #  labelled it "(Not Responding)" - and then jump to its real size when
+        #  _fit_to_screen() ran.  That was the "broken / frozen" start-up.
+        #  Now the half-built window is never visible at all: the card covers
+        #  the wait and the finished window appears at its final size.
+        self._hide_main_window()
+        self._splash = make_splash(self)
+        # Kept for _boot(), which does the work: storing it now means the config
+        # path is read from one place only.
+        self._config_path = config_path
+        try:
+            self._boot()
+        finally:
+            # Whatever happens - including a step raising - the card comes down.
+            # A crash that leaves a loading screen on the desktop with no window
+            # behind it is the least helpful failure there is; the error is
+            # reported by _report_startup_failure() instead.
+            self._splash.close()
+        self._show_main_window()
+
         # belt-and-braces: guarantee the window is actually visible and on top
         # (protects against a remembered off-screen/alpha state)
         self.after(150, lambda: self._ensure_visible())
 
         # ---- remembered window size + last used tab (clamped to the screen)
-        import re as _re
-
-        saved = str(self.cfg.get("ui.geometry", "") or "")
-        if _re.fullmatch(r"\d+x\d+\+\d+\+\d+", saved):
-            try:
-                self.geometry(saved)
-            except Exception:
-                pass
+        self._restore_geometry()
         try:
             tab = int(self.cfg.get("ui.tab", 0) or 0)
             if 0 <= tab < len(self.book.tabs()):
@@ -2031,6 +2047,64 @@ class App(ttkb.Window if ttkb else tk.Tk):
         else:
             self.log_line("(Drag & drop engine not installed - the Add buttons "
                           "do the same job.)")
+
+    def _boot(self) -> None:
+        """Everything between "the card is up" and "the window is ready".
+
+        Split out of :meth:`__init__` so the caller can wrap it in a ``finally``
+        that always takes the loading card down, even if a step here raises.
+
+        This is the one place a *new* slow step may be introduced, and it must
+        come with a ``splash.step()`` in front of it: the card's ``pump()`` is
+        what keeps it animating while a long step blocks the main thread, and a
+        step with no message behind it is a step that looks like a freeze.
+        """
+        splash = self._splash
+        splash.step(0.08, "Reading your settings...")
+
+        self.cfg = Config.load(self._config_path)
+        self.events: queue.Queue = queue.Queue()
+        self.worker: threading.Thread | None = None
+        self.tool_worker: threading.Thread | None = None
+        self.report = None
+        self.last_output: Path | None = None
+        self.step_rows: dict[str, tuple[tk.Label, tk.Label]] = {}
+        self.step_state: dict[str, str] = {}
+        self.gs_path: str | None = None
+        #: Set for real once the background tool check reports back; False until
+        #: then so nothing can read a missing attribute.
+        self.ghostscript_ready = False
+        self.cancel_flag = threading.Event()
+        self.run_started_at: datetime | None = None
+
+        set_taskbar_identity()
+        self.title(APP_NAME)
+        self.configure(background=BG)
+        splash.step(0.18, "Preparing the workspace...")
+        apply_theme(self)
+        load_icon(self)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.tool_pages: dict[str, "ToolPage"] = {}
+        self._make_variables()
+        splash.step(0.34, "Building the workspace...")
+        self._build_layout(splash)
+        self._load_from_config()
+        splash.step(0.78, "Getting the details right...")
+        self._fit_to_screen()                      # fits + centres on this display
+        self._mark_all_steps("waiting", "not started")
+        self.after(120, self._drain_events)
+
+        # The tool check runs tesseract and ghostscript as subprocesses.  It used
+        # to block the UI thread right here.  It now runs in the background, but
+        # we give it a short, bounded moment on the card first: it usually takes
+        # ~0.2 s, and when it does, the banner and the log are already correct by
+        # the time the user sees the window.  A slow machine is never made to
+        # wait for it - see _check_tools_async().
+        splash.step(0.88, "Checking the OCR engine...")
+        self._check_tools_async(wait_seconds=0.9)
+        splash.step(1.0, "Ready.")
+        splash.pump()
 
     def _enable_automation_drop(self, page: ScrollFrame) -> None:
         """Drop on the Automation tab: a folder becomes the documents folder."""
@@ -2162,6 +2236,50 @@ class App(ttkb.Window if ttkb else tk.Tk):
             f"+{max(0, (screen_w - width) // 2)}+{max(0, (screen_h - height) // 3)}"
         )
 
+    def _restore_geometry(self) -> bool:
+        """Re-apply the window size remembered from the last session.
+
+        The value is **clamped to the current screen**, and a value that looks
+        like a maximised window is ignored outright.
+
+        This matters more than it sounds.  Tk records the geometry of a
+        maximised window, so a machine where the app was ever zoomed saves
+        something like ``1920x974+322+35`` - full screen width, offset 322 px to
+        the right.  Restoring that unclamped put the right-hand third of the
+        interface off the edge of a 1920-wide display, on every single launch,
+        which is exactly the sort of thing that gets reported as "the UI looks
+        broken".  The screen it was recorded on may not even be plugged in any
+        more.
+
+        Returns ``True`` when a remembered size was usable.
+        """
+        saved = str(self.cfg.get("ui.geometry", "") or "").strip()
+        match = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", saved)
+        if not match:
+            return False
+        width, height, x, y = (int(value) for value in match.groups())
+
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        # Leave room for the taskbar and for the window borders Windows adds to
+        # GetWindowRect but not to this number.
+        max_w, max_h = screen_w - 40, screen_h - 90
+        min_w = int(min(720 * UI_SCALE, max_w))
+        min_h = int(min(400 * UI_SCALE, max_h))
+
+        # "As big as the screen" is a zoomed window, not a size the user picked.
+        if width >= screen_w - 20 or height >= screen_h - 60:
+            return False
+
+        width = max(min_w, min(width, max_w))
+        height = max(min_h, min(height, max_h))
+        x = max(0, min(x, screen_w - width))
+        y = max(0, min(y, screen_h - height))
+        try:
+            self.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            return False
+        return True
+
     def _ensure_visible(self) -> None:
         try:
             self.deiconify()
@@ -2170,6 +2288,29 @@ class App(ttkb.Window if ttkb else tk.Tk):
             self.attributes("-alpha", 1.0)
         except Exception:
             pass
+
+    def _hide_main_window(self) -> None:
+        """Keep the half-built window off the screen while it is assembled.
+
+        A window that is created but not yet laid out is painted at Tk's default
+        geometry and cannot answer Windows, so the user sees a blank rectangle
+        that then jumps.  Withdrawing it means the first thing they ever see is
+        the finished window at its final size, straight out of the loading card.
+        """
+        try:
+            self.withdraw()
+        except tk.TclError:
+            pass
+
+    def _show_main_window(self) -> None:
+        """Reveal the finished window, centred, opaque and on top."""
+        try:
+            self.deiconify()
+            self.attributes("-alpha", 1.0)
+            self.lift()
+        except tk.TclError:
+            pass
+        self._ensure_visible()
 
     # ------------------------------------------------------------- variables
     def _make_variables(self) -> None:
@@ -2187,10 +2328,21 @@ class App(ttkb.Window if ttkb else tk.Tk):
         self.var_details = tk.BooleanVar(value=False)
 
     # ---------------------------------------------------------------- layout
-    def _build_layout(self) -> None:
-        """Four tabs: the one-click automation, the tools, settings, preview."""
+    def _build_layout(self, splash=None) -> None:
+        """Four tabs: the one-click automation, the tools, settings, preview.
+
+        ``splash`` is optional and only used during start-up.  Each tab is a
+        sizeable chunk of work (the tool pages alone build six sub-pages), so
+        pumping the loading card between them keeps its animation moving instead
+        of freezing for the whole 0.5 s and looking - again - like a crash.
+        """
+        def breathe(fraction: float, message: str = "") -> None:
+            if splash is not None:
+                splash.step(fraction, message or None)
+
         self._build_header(self)
         self._build_footer(self)
+        breathe(0.40, "Building the workspace...")
         book = ttk.Notebook(self)
         book.pack(fill="both", expand=True, padx=px(8), pady=(px(8), px(4)))
         self.book = book
@@ -2205,18 +2357,21 @@ class App(ttkb.Window if ttkb else tk.Tk):
         self._build_step3(auto.inner)
 
         # ---- tab 2: one page per single task
+        breathe(0.52, "Building the workspace...")
         tools = ttk.Frame(book)
         book.add(tools, text="  PDF tools  ")
         book.tab(tools, padding=(px(10), px(6)))
         self._build_tools(tools)
 
         # ---- tab 3: settings
+        breathe(0.64, "Getting the details right...")
         settings = ScrollFrame(book)
         book.add(settings, text="  Settings  ")
         book.tab(settings, padding=(px(10), px(6)))
         self._build_settings(settings.inner)
 
         # ---- tab 4: preview (thumbnails + page facts, fully local)
+        breathe(0.72, "Getting the details right...")
         preview_frame = ttk.Frame(book)
         book.add(preview_frame, text="  Preview  ")
         book.tab(preview_frame, padding=(px(10), px(6)))
@@ -2773,6 +2928,12 @@ class App(ttkb.Window if ttkb else tk.Tk):
         self.tool_pages = {}
         for spec in TOOL_SPECS:
             self.tool_pages[spec.key] = ToolPage(self, spec)
+            # Six pages is the single biggest chunk of the start-up build, so
+            # let the loading card draw a frame between them (no-op once the
+            # splash has been closed).
+            splash = getattr(self, "_splash", None)
+            if splash is not None:
+                splash.pump()
 
     def _build_settings(self, parent: ttk.Frame) -> None:
         """The Settings tab: a short, honest explanation of what else exists."""
@@ -2917,9 +3078,65 @@ class App(ttkb.Window if ttkb else tk.Tk):
         self.log_line(f"Starting up with option: {self._current_preset().title}")
         self._set_status("Ready. Choose the documents folder, then press RUN.")
 
-    def _report_tools(self) -> None:
-        """Say plainly whether OCR is available."""
-        tools = diagnose(self.cfg)
+    def _check_tools_async(self, wait_seconds: float = 0.0) -> None:
+        """Find out whether OCR is available **without freezing the window**.
+
+        ``diagnose()`` starts ``tesseract --version`` and ``gs --version`` as
+        subprocesses.  That is ~0.2 s when everything is warm, but it can be
+        several seconds on a cold, network-installed or virus-scanned machine -
+        and it used to run on the UI thread during start-up, which is part of
+        why the app looked frozen.  The work now runs on a thread and the result
+        arrives through the normal event queue, so the window stays responsive
+        no matter how long it takes.
+
+        ``wait_seconds`` lets the caller hold the loading card open for a moment
+        so the common (fast) case has everything ready before the window is
+        shown.  It never waits longer than that: an unfinished check simply
+        reports a few hundred milliseconds later.
+        """
+        if self.tool_worker is not None and self.tool_worker.is_alive():
+            return
+
+        def job() -> None:
+            try:
+                tools = diagnose(self.cfg)
+            except Exception as exc:                   # pragma: no cover
+                self.events.put(("log", "WARN", f"could not check the OCR engine: {exc}"))
+                tools = None
+            self.events.put(("tools", tools))
+
+        self.tool_worker = threading.Thread(target=job, name="toolcheck",
+                                            daemon=True)
+        self.tool_worker.start()
+
+        if wait_seconds <= 0:
+            return
+        deadline = time.perf_counter() + wait_seconds
+        while self.tool_worker.is_alive() and time.perf_counter() < deadline:
+            self._splash.pump()
+            time.sleep(0.01)
+        # If the check finished while we were waiting, apply it now: the window
+        # is about to be shown and the OCR warning banner has to be right on the
+        # first frame the user sees, not a moment later.
+        self._process_events()
+
+    def _report_tools(self, tools: dict | None = None) -> None:
+        """Say plainly whether OCR is available.
+
+        ``tools`` is the result of :func:`court_ocr.toolcheck.diagnose` when it
+        was collected on a worker thread.  Called with no argument it does the
+        check inline, which keeps the method usable on its own (the UI tests and
+        the screenshot tools call it that way).
+        """
+        if tools is None:
+            tools = diagnose(self.cfg)
+        if not tools:
+            # The background check itself failed (not "OCR is missing" - we
+            # simply could not tell).  Say so honestly instead of claiming the
+            # engine is absent and switching the user to "merge only".
+            self.log_line("Could not check the OCR engine just now - "
+                          "if scans do not become searchable, run SETUP.ps1.")
+            return
         tesseract = tools["tesseract"]
         self.ghostscript_ready = tools["ghostscript"].available
         if tesseract.available:
@@ -3126,6 +3343,16 @@ class App(ttkb.Window if ttkb else tk.Tk):
 
     def _drain_events(self) -> None:
         """Move worker-thread messages into the widgets (Tk is not thread safe)."""
+        self._process_events()
+        self.after(120, self._drain_events)
+
+    def _process_events(self) -> None:
+        """Apply everything the worker threads have queued up, right now.
+
+        Split out of :meth:`_drain_events` so start-up can call it directly:
+        after the (bounded) wait for the tool check, the window is about to be
+        shown and the OCR banner has to already be correct.
+        """
         try:
             while True:
                 event = self.events.get_nowait()
@@ -3136,6 +3363,11 @@ class App(ttkb.Window if ttkb else tk.Tk):
                     self._step_from_log(message)
                 elif kind == "progress":
                     self.log_line(f"        {event[1]}")
+                elif kind == "tools":
+                    # Result of the background _check_tools_async() - applied
+                    # here because Tk widgets may only be touched from the main
+                    # thread.
+                    self._report_tools(event[1])
                 elif kind == "done":
                     self._finish(event[1])
                 elif kind == "error":
@@ -3153,7 +3385,6 @@ class App(ttkb.Window if ttkb else tk.Tk):
                     self.tool_pages[key]._cancelled()
         except queue.Empty:
             pass
-        self.after(120, self._drain_events)
 
     def _step_from_log(self, message: str) -> None:
         """Translate the pipeline's step banners into the friendly status list."""
@@ -3448,7 +3679,12 @@ class App(ttkb.Window if ttkb else tk.Tk):
         """Remember the settings, window size and last tab, then close."""
         try:
             self._apply_ui_to_config(persist=True)
-            self.cfg.set("ui.geometry", self.geometry())
+            # Only remember a size the user actually chose.  While the window is
+            # zoomed (maximised) `geometry()` reports the full-screen rectangle,
+            # and saving that made the app reopen oversized and pushed off the
+            # edge of the screen on every later launch.
+            if self.state() == "normal":
+                self.cfg.set("ui.geometry", self.geometry())
             try:
                 self.cfg.set("ui.tab", int(self.book.index(self.book.select())))
             except Exception:
@@ -3530,6 +3766,21 @@ ADVANCED_SPEC: tuple[tuple[str, tuple], ...] = (
         ), None, "bottom-right"),
         ("int", "Size of the numbers", "pagination.font_size", (6, 24),
          "9 is a good size for A4 paper", "sun"),
+        # PyMuPDF's built-in PDF fonts.  These names are what the paginate
+        # step passes to page.insert_text(), so the preview renders with the
+        # exact same face the finished filing will carry.
+        ("choice", "Font style", "pagination.font", (
+            ("helv", "Helvetica"), ("hebo", "Helvetica Bold"),
+            ("tiro", "Times Roman"), ("tibo", "Times Bold"),
+            ("cour", "Courier"),
+        ), "Times Roman looks closest to a typed pleading", "text"),
+        ("choice", "Number style", "pagination.style", (
+            ("arabic", "1, 2, 3"), ("roman", "i, ii, iii"),
+            ("ROMAN", "I, II, III"), ("alpha", "A, B, C"),
+        ), None, "hash"),
+        ("int", "Start numbering from", "pagination.start_number", (1, 1000),
+         "The first printed number. Set 12 and the pages read 12, 13, 14... "
+         "when this file continues an already-numbered bundle", "hash"),
         ("int", "Leave the first pages blank", "pagination.skip_first_pages",
          (0, 20), "Useful when page 1 is a cover that should stay clean",
          "minus"),
@@ -3876,6 +4127,9 @@ class AdvancedDialog(tk.Toplevel):
             "pagination.position": "position",
             "pagination.font_size": "font_size",
             "pagination.skip_first_pages": "skip_first",
+            "pagination.start_number": "start_number",
+            "pagination.font": "font",
+            "pagination.style": "style",
         }
         for row in self.rows:
             preview_key = preview_keys.get(row["key"])
@@ -3980,6 +4234,13 @@ def main(argv: list[str] | None = None) -> int:
     """Start the desktop app (optionally with --config <path>)."""
     global UI_SCALE
     UI_SCALE = enable_dpi_awareness()     # must happen before Tk creates a window
+    # Also before any window exists: Windows fixes a process's taskbar identity
+    # at the moment its FIRST window is created, and looks the name and icon up
+    # through that identity.  App.__init__ used to call this after the window
+    # was already up, which is too late - the taskbar button had been grouped
+    # under pythonw.exe, showing the Python icon instead of the brand mark and
+    # the name of whichever shortcut happened to launch it.
+    set_taskbar_identity()
     if not enforce_single_instance():
         return 0                          # another copy is running; we focused it
     config_path: str | None = None
