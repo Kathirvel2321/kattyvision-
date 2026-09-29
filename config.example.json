@@ -1,5 +1,6 @@
 {
   "_comment": "OCR / Court Filing Automation - master settings. Change values here, no code editing needed.",
+  "_paths_comment": "Every folder below is RELATIVE to this program's own folder, and that is deliberate. An absolute path here would point at whichever machine happened to save the file, so a colleague installing a copy would be told their folder 'is not this installation' on every run. Leave these relative and the program always uses its own folders.",
   "case": {
     "name": "SAMPLE CASE",
     "court": "Raigad District Court",
@@ -7,8 +8,8 @@
     "case_number": ""
   },
   "paths": {
-    "input": "C:\\Users\\ipvis\\Documents\\ocr\\input",
-    "output": "C:\\Users\\ipvis\\Documents\\ocr\\output",
+    "input": "input",
+    "output": "output",
     "work": "work",
     "logs": "logs",
     "stamp_image": "assets/stamp.png",

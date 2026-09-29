@@ -16,7 +16,16 @@ from pathlib import Path
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
+#: The folder the program lives in.  The release build (tools/build_release.ps1)
+#: ships its own Tesseract *inside* that folder, so a colleague who has never
+#: installed anything still gets working OCR - that is the whole point of the
+#: portable package.  It is checked first on purpose: a copy that travels with
+#: the app is the one guaranteed to match the version the app was tested with.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 TESSERACT_HINTS = (
+    str(PROJECT_ROOT / "tesseract" / "tesseract.exe"),
+    str(PROJECT_ROOT / "tesseract" / "bin" / "tesseract.exe"),
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
     r"C:\Tesseract-OCR\tesseract.exe",

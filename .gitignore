@@ -21,7 +21,12 @@ __pycache__/
 # config.example.json instead and let Config fall back to its built-in defaults.
 config.json
 
-# Scratch scripts used while debugging - not part of the product.
-tools/_fx.py
-tools/_ui_shot.py
-tools/verify_output.py
+# The finished portable package. It is ~100 MB and is built on demand with
+# tools/build_release.ps1 - it must never be committed, and it must never be the
+# way anyone gets a fix.  Ship the zip, not the folder.
+release/
+
+# Scratch scripts used while debugging or screenshotting - not part of the
+# product. Anything in tools/ starting with "_" is one of these. (The real test
+# and build scripts do not use that prefix.)
+tools/_*.py

@@ -52,6 +52,37 @@ TOTAL       6-8 s   -> 8-page searchable, numbered, sealed PDF
 
 ## 1. Install (once, ~2 minutes)
 
+### The way you give it to someone (recommended)
+
+Build the portable package once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build_release.ps1
+```
+
+It produces `release\KattyVision-<version>-win64.zip` (**~100 MB**). Send that
+one file to a colleague. They unzip it anywhere, double click **`Install.cmd`**,
+and the program is ready:
+
+* **no Python needed** on their PC - a private copy travels inside the package
+* **no administrator rights** and nothing is installed system-wide
+* **works with no internet** - the OCR engine and the language data are included
+* **uninstall = delete the folder** and the two desktop icons
+
+The only thing they cannot get from you in the zip is the **bank seal**, which
+is deliberately never packaged. They save it once as `assets\stamp.png` and the
+program then reports the stamp step as `OK`.
+
+**To give someone a fix:** rebuild with a higher version and send the new zip.
+They unpack it straight over their existing folder. Only the files in the zip
+are written, so their `input`, `output`, `config.json` and seal are left exactly
+as they were - verified by test, not just by intention.
+
+> Use `-NoOcr` for a much smaller package (~25 MB) if the PCs have a reliable
+> internet connection; OCR then has to be installed on that machine.
+
+### The way you set up your own machine (from the repo)
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\SETUP.ps1
 ```
@@ -225,6 +256,8 @@ tools/make_sample_pdf.py  creates a fake case for practice
 tools/selftest.py         end-to-end run on a practice case
 tools/splash_tests.py     start-up / loading card checks
 tools/ui_tests.py         widget behaviour checks
+tools/build_release.ps1   builds the portable zip you send to other people
+packaging/                the files that go into that zip (installer, launcher, instructions)
 input/<CASE>/             drop the documents here
 output/<CASE>/            finished files + CSV report
 work/<CASE>/              intermediate files (auto-cleaned)
