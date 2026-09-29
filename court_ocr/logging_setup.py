@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOGGER_NAME = "court_ocr"
@@ -30,7 +31,14 @@ def _build(log_dir: Path | None, verbose: bool) -> logging.Logger:
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_handler = logging.FileHandler(log_dir / f"run_{stamp}.log", encoding="utf-8")
+        # Rotate: an office PC runs this for years, and one permanent log per
+        # run would otherwise fill the disk with stale run history.
+        file_handler = RotatingFileHandler(
+            log_dir / f"run_{stamp}.log",
+            maxBytes=1_000_000,      # 1 MB per run log
+            backupCount=5,           # keep the 5 newest, then roll over
+            encoding="utf-8",
+        )
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
         )

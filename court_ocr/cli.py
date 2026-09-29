@@ -90,16 +90,42 @@ def _doctor(cfg: Config) -> int:
         print("  note: Ghostscript is optional - it only adds an extra squeeze "
               "at the end (see SETUP.ps1).")
     print("-" * 70)
+    problems: list[str] = []
     for label, key in (("input ", "paths.input"), ("output", "paths.output"),
                        ("work  ", "paths.work"), ("logs  ", "paths.logs")):
         target = cfg.resolve(key)
-        print(f"  {label} : {target}   {'exists' if target.exists() else 'missing'}")
+        if target.exists():
+            print(f"  {label} : {target}   exists")
+        elif key in ("paths.input", "paths.output"):
+            # These two are only created on demand; not an error.
+            print(f"  {label} : {target}   will be created on first run")
+        else:
+            print(f"  {label} : {target}   MISSING")
+            problems.append(f"{label.strip()} folder is missing: {target}")
+
+    seal = cfg.resolve("paths.stamp_image")
+    if not seal.is_file():
+        shipped = PROJECT_ROOT / "assets" / "stamp_PLACEHOLDER.png"
+        where = shipped if shipped.is_file() else seal
+        print(f"  seal   : {where}   PLACEHOLDER (not the bank's real seal)")
+        problems.append(
+            "no real bank seal at assets\\stamp.png - a placeholder will be stamped. "
+            "Replace it with the official transparent PNG before filing."
+        )
+    else:
+        print(f"  seal   : {seal}   real seal found")
+
     print("-" * 70)
     if tesseract.available:
         print("READY: OCR, compression and splitting can all run locally.")
-        return 0
-    print("OCR is not available yet. Tesseract is free/open-source - run SETUP.ps1 once.")
-    return 1
+    else:
+        print("OCR is not available yet. Tesseract is free/open-source - run SETUP.ps1 once.")
+    if problems:
+        print()
+        for problem in problems:
+            print(f"  ! {problem}")
+        return 1
+    return 0 if tesseract.available else 1
 
 
 def main(argv: list[str] | None = None) -> int:

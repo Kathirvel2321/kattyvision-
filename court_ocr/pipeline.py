@@ -22,7 +22,7 @@ import pymupdf
 
 from . import ocr_engine, optimize, pdf_ops
 from . import stamp as stamp_mod
-from .config import Config
+from .config import PROJECT_ROOT, Config
 from .logging_setup import StepTimer, get_logger
 from .toolcheck import diagnose, languages as tesseract_languages
 from .util import MB, apply_template, clear_dir, ensure_dir, open_in_explorer, safe_filename
@@ -133,25 +133,36 @@ class Pipeline:
         )
         return result
 
-    def _stamp_image(self) -> Path | None:
-        """Resolve the seal image, creating a placeholder seal if none exists."""
+    def _stamp_image(self) -> tuple[Path | None, bool]:
+        """Resolve the seal image.
+
+        Returns ``(path, is_placeholder)``.  A placeholder seal is a stand-in
+        drawn by the program, NOT the bank's real seal: stamping one onto a
+        court filing by accident would be a serious problem, so the caller is
+        told about it and the step is reported as needing a look.
+        """
         configured = Path(str(self.cfg.get("stamp.image", "") or ""))
         candidate = configured if configured.is_absolute() else (self.cfg.resolve("paths.stamp_image"))
         if candidate.is_file():
-            return candidate
+            return candidate, False
         fallback = self.cfg.resolve("paths.stamp_image")
         if fallback.is_file():
-            return fallback
+            return fallback, False
+        # No real seal on this machine.  Ship a clearly marked placeholder, or
+        # draw one, and say so loudly rather than pretending the step is fine.
+        shipped = PROJECT_ROOT / "assets" / "stamp_PLACEHOLDER.png"
+        if shipped.is_file():
+            return shipped, True
         try:
             return stamp_mod.generate_seal_png(
                 fallback,
                 top_text=str(self.cfg.get("case.bank_name", "") or "GOVERNMENT BANK"),
                 bottom_text=str(self.cfg.get("case.court", "") or ""),
                 center_text="AUTHORISED SIGNATORY",
-            )
+            ), True
         except Exception as exc:
             LOGGER.warning("could not create a placeholder seal: %s", exc)
-            return None
+            return None, False
 
     # -------------------------------------------------------------------- run
     def run(
@@ -368,38 +379,55 @@ class Pipeline:
         # ---------------------------------------------------------- 7. stamp
         if "stamp" in wanted and self.cfg.get("stamp.enabled"):
             stamp_target = work / "06_stamped.pdf"
-            seal = self._stamp_image()
-            text_cfg = dict(self.cfg.get("stamp.text", {}) or {})
-            if not text_cfg.get("lines") and self.cfg.get("case.bank_name"):
-                text_cfg["lines"] = [str(self.cfg.get("case.bank_name"))]
-            with StepTimer(LOGGER, "stamp") as timer:
-                stamped = stamp_mod.apply_stamp(
-                    current, stamp_target,
-                    image_path=seal,
-                    pages=str(self.cfg.get("stamp.pages", "all") or "all"),
-                    position=str(self.cfg.get("stamp.position", "bottom-right")),
-                    width_percent=float(self.cfg.get("stamp.width_percent", 20) or 20),
-                    offset_x_mm=float(self.cfg.get("stamp.offset_x_mm", 12) or 0),
-                    offset_y_mm=float(self.cfg.get("stamp.offset_y_mm", 12) or 0),
-                    nudge_x_mm=float(self.cfg.get("stamp.nudge_x_mm", 0) or 0),
-                    nudge_y_mm=float(self.cfg.get("stamp.nudge_y_mm", 0) or 0),
-                    opacity=float(self.cfg.get("stamp.opacity", 0.9) or 0.9),
-                    rotation=int(self.cfg.get("stamp.image_rotation", 0) or 0),
-                    remove_white=bool(self.cfg.get("stamp.remove_white", False)),
-                    white_threshold=int(self.cfg.get("stamp.remove_white_threshold", 235) or 235),
-                    cache_dir=work,
-                    text=text_cfg,
-                    progress=self.progress,
+            seal, seal_is_placeholder = self._stamp_image()
+            if seal is None:
+                note = ("no seal image found and none could be created - the seal was "
+                        "NOT applied. Add the bank's real assets\\stamp.png and run again.")
+                LOGGER.error("%s", note)
+                report.warnings.append(note)
+                self._record(report, "stamp", current, current, 0.0, ok=False,
+                             detail="skipped: no seal image available", pages=pages)
+            else:
+                if seal_is_placeholder:
+                    # Court-safety: a stand-in seal must never look like success.
+                    note = ("a PLACEHOLDER seal was stamped, not the bank's real seal. "
+                            "Replace assets\\stamp.png with the official transparent PNG "
+                            "before filing anything with the court.")
+                    LOGGER.error("%s", note)
+                    report.warnings.append(note)
+                text_cfg = dict(self.cfg.get("stamp.text", {}) or {})
+                if not text_cfg.get("lines") and self.cfg.get("case.bank_name"):
+                    text_cfg["lines"] = [str(self.cfg.get("case.bank_name"))]
+                with StepTimer(LOGGER, "stamp") as timer:
+                    stamped = stamp_mod.apply_stamp(
+                        current, stamp_target,
+                        image_path=seal,
+                        pages=str(self.cfg.get("stamp.pages", "all") or "all"),
+                        position=str(self.cfg.get("stamp.position", "bottom-right")),
+                        width_percent=float(self.cfg.get("stamp.width_percent", 20) or 20),
+                        offset_x_mm=float(self.cfg.get("stamp.offset_x_mm", 12) or 0),
+                        offset_y_mm=float(self.cfg.get("stamp.offset_y_mm", 12) or 0),
+                        nudge_x_mm=float(self.cfg.get("stamp.nudge_x_mm", 0) or 0),
+                        nudge_y_mm=float(self.cfg.get("stamp.nudge_y_mm", 0) or 0),
+                        opacity=float(self.cfg.get("stamp.opacity", 0.9) or 0.9),
+                        rotation=int(self.cfg.get("stamp.image_rotation", 0) or 0),
+                        remove_white=bool(self.cfg.get("stamp.remove_white", False)),
+                        white_threshold=int(self.cfg.get("stamp.remove_white_threshold", 235) or 235),
+                        cache_dir=work,
+                        text=text_cfg,
+                        progress=self.progress,
+                    )
+                seal_note = "PLACEHOLDER seal" if seal_is_placeholder else "seal"
+                self._record(
+                    report, "stamp", current, stamped.path, timer.seconds,
+                    ok=stamped.ok and not seal_is_placeholder,
+                    detail=(f"{seal_note} placed on {stamped.pages_stamped} page(s)"
+                            + (f"; text stamp on {stamped.text_lines} page(s)"
+                               if stamped.text_lines else "")
+                            + ("" if stamped.ok else f"; {stamped.detail}")),
+                    pages=pages,
                 )
-            self._record(
-                report, "stamp", current, stamped.path, timer.seconds, ok=stamped.ok,
-                detail=(f"seal placed on {stamped.pages_stamped} page(s)"
-                        + (f"; text stamp on {stamped.text_lines} page(s)"
-                           if stamped.text_lines else "")
-                        + ("" if stamped.ok else f"; {stamped.detail}")),
-                pages=pages,
-            )
-            current = stamped.path
+                current = stamped.path
 
         # ------------------------------------------------------------ 8. split
         final_name = self.cfg.case_field(

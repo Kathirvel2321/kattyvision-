@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+LOGGER = logging.getLogger("court_ocr")
 
 DEFAULTS: dict[str, Any] = {
     "case": {
@@ -154,6 +158,31 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+def _is_inside(path: Path, root: Path) -> bool:
+    """True when ``path`` is ``root`` or lives underneath it."""
+    try:
+        return os.path.commonpath([str(path), str(root)]) == str(root)
+    except ValueError:                      # different drives
+        return False
+
+
+def _describe_foreign(path: Path, root: Path) -> str:
+    """Describe a path that belongs to some *other* installation, or "".
+
+    Only paths that look like another copy of this project (a folder holding a
+    ``court_ocr`` package, or a case folder such as ``output/<CASE>``) are
+    second-guessed.  A deliberately configured external folder - a network
+    share, say - is still honoured.
+    """
+    if _is_inside(path, root):
+        return ""
+    parts = {p.lower() for p in path.parts}
+    looks_like_ours = any(
+        part in ("court_ocr", "input", "output", "work", "logs") for part in parts
+    ) or (path / "court_ocr").is_dir()
+    return str(path) if looks_like_ours else ""
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge ``override`` into ``base`` (``base`` is not modified)."""
     result = copy.deepcopy(base)
@@ -223,12 +252,32 @@ class Config:
 
     # ------------------------------------------------------------------ paths
     def resolve(self, dotted: str) -> Path:
-        """Resolve a configured path relative to the project root."""
+        """Resolve a configured path relative to the project root.
+
+        Absolute paths are honoured, but one that points at a *different*
+        project folder than this one is treated as a leftover from another
+        machine and ignored.  Without this, a config.json copied from a
+        colleague's PC would quietly read and write case documents in their
+        user profile instead of this installation - which looks like it worked.
+        """
         raw = str(self.get(dotted, "") or "").strip().replace("\\", "/")
         if not raw:
             return PROJECT_ROOT
         p = Path(raw)
-        return p if p.is_absolute() else (PROJECT_ROOT / p)
+        if p.is_absolute():
+            resolved = p
+            # A config pointing into another user's profile is a stale copy.
+            if not _is_inside(resolved, PROJECT_ROOT):
+                other = _describe_foreign(resolved, PROJECT_ROOT)
+                if other:
+                    LOGGER.warning(
+                        "config %s points at %s, which is not this installation (%s); "
+                        "using the local folder instead. Fix or remove that setting.",
+                        dotted, resolved, PROJECT_ROOT,
+                    )
+                    return PROJECT_ROOT / p.name
+            return resolved
+        return PROJECT_ROOT / p
 
     # ------------------------------------------------------------------ flags
     @property

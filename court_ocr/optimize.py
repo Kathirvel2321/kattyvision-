@@ -450,9 +450,16 @@ def optimize_pdf(
                     "settings", target_mb)
         attempt.unlink(missing_ok=True)
 
-    assert result is not None                     # ladder always has one rung
+    # A plain `assert` would vanish under `python -O`, turning a broken run into
+    # an obscure AttributeError further down, so this is a real check.
+    if result is None:                       # unreachable: the ladder has one rung
+        raise RuntimeError(
+            f"compression produced no result for {doc_path} - nothing was written"
+        )
+    if not out_path.is_file():
+        raise RuntimeError(f"compression did not write {out_path}")
     result.after_mb = out_path.stat().st_size / MB
-    wrote_something = out_path.is_file() and result.after_mb > 0
+    wrote_something = result.after_mb > 0
     # A size target that was asked for and not met is a FAILURE, not a quiet
     # success.  This used to be set from "did we write a file at all", so a PDF
     # left comfortably over the portal limit came back ok=True, the pipeline's

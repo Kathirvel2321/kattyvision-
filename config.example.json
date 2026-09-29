@@ -7,7 +7,7 @@
     "case_number": ""
   },
   "paths": {
-    "input": "C:\\Users\\ipvis\\Documents\\ocr",
+    "input": "C:\\Users\\ipvis\\Documents\\ocr\\input",
     "output": "C:\\Users\\ipvis\\Documents\\ocr\\output",
     "work": "work",
     "logs": "logs",
@@ -139,11 +139,7 @@
   },
   "ui": {
     "preset": "standard",
-    "recent_folders": [
-      "input\\SAMPLE CASE",
-      "C:\\Users\\ipvis\\Documents\\ocr\\input\\SAMPLE CASE",
-      "X:/demo"
-    ],
+    "recent_folders": [],
     "geometry": "1275x975+322+35",
     "tab": 1
   }

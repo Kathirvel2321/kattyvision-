@@ -10,7 +10,18 @@ input/*
 
 # Sample material and caches created during testing
 input/SAMPLE CASE/
+# The bank's real seal is confidential and machine-specific: never committed.
+# assets/stamp_PLACEHOLDER.png IS committed, so a fresh clone still runs.
 assets/stamp.png
 __pycache__/
 *.pyc
 *.pyo
+
+# Per-machine settings (case name, recent folders, window position). Ship
+# config.example.json instead and let Config fall back to its built-in defaults.
+config.json
+
+# Scratch scripts used while debugging - not part of the product.
+tools/_fx.py
+tools/_ui_shot.py
+tools/verify_output.py
