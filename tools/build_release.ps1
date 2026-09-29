@@ -41,12 +41,14 @@
         powershell -ExecutionPolicy Bypass -File tools\build_release.ps1
         powershell -ExecutionPolicy Bypass -File tools\build_release.ps1 -Version 1.1.0
         powershell -ExecutionPolicy Bypass -File tools\build_release.ps1 -NoOcr
+        powershell -ExecutionPolicy Bypass -File tools\build_release.ps1 -OutputRoot work\release-check
 #>
 [CmdletBinding()]
 param(
     [string]$Version = "",
     [switch]$NoOcr,          # leave the OCR engine out (much smaller, needs internet)
-    [switch]$NoZip           # build the folder only
+    [switch]$NoZip,          # build the folder only
+    [string]$OutputRoot = "release"  # alternate staging folder for validation builds
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,7 +70,11 @@ if (-not $Version) {
     else { $Version = "0.0.0" }
 }
 $stamp = Get-Date -Format "yyyyMMdd-HHmm"
-$outDir = Join-Path $Root "release"
+$outDir = if ([IO.Path]::IsPathRooted($OutputRoot)) {
+    [IO.Path]::GetFullPath($OutputRoot)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $Root $OutputRoot))
+}
 $build = Join-Path $outDir "KattyVision-$Version"
 $zipPath = Join-Path $outDir "KattyVision-$Version-win64.zip"
 

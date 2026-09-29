@@ -75,6 +75,7 @@ class PipelineReport:
             writer.writerow(["Finished",
                              (self.finished or datetime.now()).strftime("%d-%m-%Y %H:%M:%S")])
             writer.writerow(["Total time", f"{self.elapsed:.1f} s"])
+            writer.writerow(["Run status", "OK" if self.ok else "REVIEW REQUIRED"])
             writer.writerow([])
             writer.writerow(["Step", "Status", "Size", "Pages", "Seconds", "Detail"])
             for result in self.steps:
@@ -105,9 +106,55 @@ class Pipeline:
         self.work: Path = ensure_dir(cfg.resolve("paths.work"))
 
     # ------------------------------------------------------------------ utils
+    def _pagination_font(self) -> str:
+        """Which face the page numbers are drawn in.
+
+        A ``pagination.font_file`` entry (a .ttf/.otf path) wins; when it is
+        missing or unreadable the built-in ``pagination.font`` name is used.
+        Path resolution goes through the config so a relative path like
+        ``fonts/court.ttf`` inside the program folder works.
+        """
+        file_value = str(self.cfg.get("pagination.font_file", "") or "").strip()
+        if file_value:
+            try:
+                path = Path(self.cfg.resolve(file_value))
+            except Exception:
+                path = Path(file_value)
+            if path.is_file():
+                return str(path)
+            LOGGER.warning("[paginate] pagination.font_file %r not found - "
+                           "using pagination.font instead", file_value)
+        return str(self.cfg.get("pagination.font", "helv") or "helv")
+
     def _log_tools(self) -> None:
         for name, info in self.tools.items():
             LOGGER.info("tool %-11s : %s", name, info.status)
+
+    @staticmethod
+    def _validate_run_paths(input_dir: Path, output_dir: Path, work_dir: Path) -> None:
+        """Reject overlapping trees before creating or cleaning any folders.
+
+        A work folder below the input tree can be erased by ``clean_work``;
+        an output folder below the input tree can be re-ingested on the next
+        run.  Overlap between output and work can also delete finished files
+        during cleanup.  Resolve first so ``..`` and existing junction targets
+        are considered when possible.
+        """
+        paths = {
+            "input": input_dir.resolve(),
+            "output": output_dir.resolve(),
+            "work": work_dir.resolve(),
+        }
+        names = list(paths)
+        for index, left_name in enumerate(names):
+            for right_name in names[index + 1:]:
+                left, right = paths[left_name], paths[right_name]
+                if left == right or left in right.parents or right in left.parents:
+                    raise ValueError(
+                        f"Unsafe folder configuration: {left_name} ({left}) and "
+                        f"{right_name} ({right}) overlap. Choose separate folders "
+                        "for input, output, and work."
+                    )
 
     def _record(
         self,
@@ -180,11 +227,42 @@ class Pipeline:
         started = time.time()
         input_dir = Path(input_dir) if input_dir else self.cfg.resolve("paths.input")
         output_dir = Path(output_dir) if output_dir else self.cfg.resolve("paths.output")
+        if not input_dir.is_dir():
+            raise ValueError(f"Input folder does not exist or is not a folder: {input_dir}")
+        self._validate_run_paths(input_dir, output_dir, self.work)
         case = safe_filename(case_name or self.cfg.case_name or Path(input_dir).name, "Case")
         wanted = {s.lower() for s in steps} if steps else set(STEP_ORDER)
 
-        out_case = ensure_dir(Path(output_dir) / case)
-        work = ensure_dir(self.work / case)
+        case_output = Path(output_dir) / case
+        out_case = case_output
+        # Never replace a prior filing silently.  Keep the familiar case folder
+        # for its first run; put later runs in their own timestamped directory.
+        # A collision in the timestamp path is retried rather than reused.
+        has_prior_results = case_output.is_dir() and (
+            any(case_output.glob("*.pdf")) or any(case_output.glob("*_report.csv"))
+        )
+        work_case = self.work / case
+        if has_prior_results:
+            for _ in range(10):
+                run_name = datetime.now().strftime("Run_%Y%m%d_%H%M%S_%f")
+                candidate = case_output / run_name
+                self._validate_run_paths(input_dir, candidate, work_case)
+                try:
+                    candidate.mkdir(parents=True, exist_ok=False)
+                except FileExistsError:
+                    continue
+                out_case = candidate
+                LOGGER.warning(
+                    "Existing results found for case %s; preserving them and writing "
+                    "this run to %s", case, out_case
+                )
+                break
+            else:
+                raise RuntimeError("Could not allocate a unique output folder for this run.")
+        else:
+            self._validate_run_paths(input_dir, out_case, work_case)
+            ensure_dir(out_case)
+        work = ensure_dir(work_case)
         if clean_work:
             clear_dir(work)
         report = PipelineReport(case=case)
@@ -215,6 +293,12 @@ class Pipeline:
                     continue
             valid.append(path)
 
+        if not valid:
+            raise ValueError(
+                "No readable documents were found. Every input PDF was invalid, "
+                "encrypted, or unsupported; review the log and source files."
+            )
+
         current = valid[0]
         pages = 0
 
@@ -234,7 +318,8 @@ class Pipeline:
             report.warnings.append(f"merge skipped {name}: {why}")
         source_mb = sum(p.stat().st_size for p in valid if p.is_file()) / MB
         report.add(
-            "merge", ok=merged.pages > 0, path=current, before_mb=source_mb,
+            "merge", ok=merged.pages > 0 and not merged.skipped and not report.warnings,
+            path=current, before_mb=source_mb,
             after_mb=current.stat().st_size / MB, pages=merged.pages, seconds=timer.seconds,
             detail=(f"{merged.included} document(s) -> 1 PDF"
                     + (f"; {len(merged.skipped)} skipped" if merged.skipped else "")),
@@ -361,7 +446,7 @@ class Pipeline:
                     current, page_target,
                     fmt=str(self.cfg.get("pagination.format", "Page {page} of {total}")),
                     position=str(self.cfg.get("pagination.position", "bottom-center")),
-                    font=str(self.cfg.get("pagination.font", "helv")),
+                    font=str(self._pagination_font()),
                     font_size=float(self.cfg.get("pagination.font_size", 9) or 9),
                     margin_mm=float(self.cfg.get("pagination.margin_mm", 8) or 8),
                     start_number=int(self.cfg.get("pagination.start_number", 1) or 1),
@@ -433,6 +518,13 @@ class Pipeline:
         final_name = self.cfg.case_field(
             str(self.cfg.get("output.final_name_template", "{case}_Final.pdf"))
         )
+        # The template is filled in with the case name and number, and an
+        # Indian case number is routinely written "S.A. 245/2026" - the slash is
+        # a directory separator, so the finished file was being written to a
+        # path that does not exist and the run failed at the very last step,
+        # after all the real work had already been done.  The split parts are
+        # sanitised by pdf_ops; this one had to be done here.
+        final_name = safe_filename(final_name, fallback=f"{self.cfg.case_name}_Final.pdf")
         final_path = out_case / final_name
         outputs: list[Path] = []
         if "split" in wanted and self.cfg.get("split.enabled"):
@@ -480,7 +572,8 @@ class Pipeline:
                 report.warnings.append(note)
             written_mb = sum((f.stat().st_size / MB) for f in outputs) if outputs else 0.0
             self._record(report, "split", current, outputs[0] if outputs else None,
-                         timer.seconds, ok=bool(outputs), detail=detail, pages=pages)
+                         timer.seconds, ok=bool(outputs) and not parts.skipped,
+                         detail=detail, pages=pages)
             if report.steps:                      # show total bytes written, not just part 1
                 report.steps[-1].after_mb = written_mb
         else:
@@ -493,6 +586,10 @@ class Pipeline:
         # ----------------------------------------------------------- 9. finish
         report.finished = datetime.now()
         report.outputs = outputs
+        # Warnings describe work that needs a person to review (for example,
+        # an OCR fallback or an input that could not be merged).  Do not return
+        # a green run status when the report itself says something was skipped.
+        report.ok = all(step.ok for step in report.steps) and not report.warnings
         if bool(self.cfg.get("output.write_report", True)) and outputs:
             report.to_csv(out_case / f"{Path(final_name).stem}_report.csv")
         if not bool(self.cfg.get("output.keep_intermediate_files", False)):
@@ -510,7 +607,6 @@ class Pipeline:
             LOGGER.info("   %-58s %8.2f MB  (%d pages)",
                         output.name, output.stat().st_size / MB,
                         self._page_count(output))
-        report.ok = all(step.ok for step in report.steps)
         if bool(self.cfg.get("output.open_output_folder", False)):
             open_in_explorer(out_case)
         return report

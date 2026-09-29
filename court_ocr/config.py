@@ -93,6 +93,7 @@ DEFAULTS: dict[str, Any] = {
         "format": "Page {page} of {total}",
         "position": "bottom-center",
         "font": "helv",
+        "font_file": "",
         "font_size": 9,
         "margin_mm": 8,
         "start_number": 1,
@@ -176,10 +177,14 @@ def _describe_foreign(path: Path, root: Path) -> str:
     """
     if _is_inside(path, root):
         return ""
-    parts = {p.lower() for p in path.parts}
-    looks_like_ours = any(
-        part in ("court_ocr", "input", "output", "work", "logs") for part in parts
-    ) or (path / "court_ocr").is_dir()
+    # A generic ancestor named ``work`` or ``output`` is common on shared
+    # drives and in temporary validation folders.  Treat a path as belonging
+    # to another installation only when its layout is backed by the package.
+    layout_dirs = {"input", "output", "work", "logs"}
+    looks_like_ours = (path / "court_ocr").is_dir() or any(
+        part.name.lower() in layout_dirs and (part.parent / "court_ocr").is_dir()
+        for part in (path, *path.parents)
+    )
     return str(path) if looks_like_ours else ""
 
 

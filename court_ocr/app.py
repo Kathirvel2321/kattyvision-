@@ -34,7 +34,6 @@ except ImportError:                      # graceful fall-back to stock ttk
 
 from .config import PROJECT_ROOT, Config
 from .logging_setup import get_logger, reset_logger
-from .pipeline import Pipeline
 from .splash import make_splash
 from .toolcheck import diagnose
 from .ui_kit import (ACCENT, ACCENT_SOFT, BG, BORDER, BORDER_STRONG, BODY, CAPTION,
@@ -440,7 +439,7 @@ TIP_TEXT: dict[str, str] = {
     "level": "The old global strength setting. Only used by the 'older' shrinking method in Settings.",
     "preset": "How the pages are re-encoded. Scanned pages become 1-bit black and white (small and sharp); pages that already have real text are never touched. 'Balanced' is right for almost every filing.",
     "target_mb": "The app keeps trying until every file is under this size. 0 = just make it as small as reasonably possible.",
-    "format": "What is printed on every page. {page} becomes the page number, {total} the total.",
+    "format": "Pick the finished line you want on every page - 'Page 1 of 20', '1 / 20' and so on. Only choose 'Write my own...' if you need something unusual.",
     "position": "Where the numbers/seal are printed on the page.",
     "font_size": "Size of the printed numbers.",
     "skip_first": "Useful when page 1 is a title or index page that should stay clean.",
@@ -453,6 +452,78 @@ TIP_TEXT: dict[str, str] = {
     "max_mb": "The court portal refuses files bigger than this (MB).",
     "keep_bookmarks": "When cutting the PDF into parts, it prefers to cut between documents rather than through one.",
 }
+
+# --------------------------------------------------------------- page numbers
+# Ready-made page-number layouts.  Each pair is (what gets stored, what the
+# user reads).  The label is a finished example - "Page 1 of 20" - because
+# asking someone to type "{page} of {total}" from memory was the one control
+# on this page that genuinely needed explaining.  Picking a line they can read
+# needs no explanation at all.
+PAGE_FORMAT_CUSTOM = "__custom__"
+
+PAGE_FORMAT_PRESETS: tuple[tuple[str, str], ...] = (
+    ("Page {page} of {total}",        "Page 1 of 20"),
+    ("{page} of {total}",             "1 of 20"),
+    ("{page} / {total}",              "1 / 20"),
+    ("[{page} of {total}]",           "[1 of 20]"),
+    ("Page {page}",                   "Page 1"),
+    ("- {page} -",                    "- 1 -"),
+    ("({page})",                      "(1)"),
+    ("{page}",                        "1"),
+    ("Page {roman} of {roman_total}", "Page i of xx"),
+    (PAGE_FORMAT_CUSTOM,              "Write my own..."),
+)
+
+
+def build_format_picker(field: tk.Misc, presets, var: tk.StringVar,
+                        entry_width: int = 26) -> tk.Frame:
+    """A drop-down of ready-made page-number layouts, beside a live preview.
+
+    The box on the right always shows the template that will really be stored,
+    so choosing "1 / 20" puts "1 / 20" on screen instead of the internal
+    "{page} / {total}".  It only becomes a typing box when "Write my own..." is
+    picked, which keeps the technical form out of sight for everyone else.
+
+    ``var`` always holds the plain template, so the run reads it exactly as it
+    read the old free-text field - no label-to-value mapping needed anywhere.
+    """
+    holder = tk.Frame(field, bg=CARD)
+    labels = [text for _value, text in presets]
+    forward = {str(value): text for value, text in presets}
+    custom_label = forward.get(PAGE_FORMAT_CUSTOM, "Write my own...")
+
+    # Show the matching line for whatever is already stored.  An unfamiliar
+    # template (typed by hand in an older version, say) is treated as custom so
+    # it is not silently swapped for a preset the user never chose.
+    stored = str(var.get() or "")
+    picked = tk.StringVar(value=forward.get(stored, custom_label))
+
+    picker = ttk.Combobox(
+        holder, state="readonly",
+        width=max(14, min(24, max((len(text) for text in labels), default=12) + 2)),
+        values=labels, textvariable=picked)
+    picker.pack(side="left")
+    # Deliberately left editable rather than flipped to state="readonly" once a
+    # preset is chosen.  A read-only ttk Entry does not report its own text back
+    # through .get(), so the box rendered blank next to every chosen line - the
+    # one thing it existed to show.  Always editable also means a custom layout
+    # can be typed at any moment, without hunting for the "Write my own..." line.
+    entry = ttk.Entry(holder, textvariable=var, width=entry_width)
+    entry.pack(side="left", padx=(px(8), 0))
+
+    def _chosen(_event: object = None) -> None:
+        label = str(picked.get())
+        if label == custom_label:
+            entry.focus_set()
+            entry.select_range(0, "end")
+            return
+        for value, text in presets:
+            if text == label:
+                var.set(value)
+                return
+
+    picker.bind("<<ComboboxSelected>>", _chosen)
+    return holder
 
 
 def flash_window(window: tk.Misc) -> None:
@@ -477,6 +548,75 @@ def flash_window(window: tk.Misc) -> None:
 
 _MUTEX_HANDLE = None
 
+# Set-up messages only.  The real per-run logger needs a resolved config, which
+# does not exist this early, so this one goes wherever the console/root logger
+# happens to be pointed.  Used to explain a "clicked the icon, nothing
+# happened" report after the fact.
+_startup_log = logging.getLogger("kattyvision.startup")
+
+
+def _flash_window(hwnd: int) -> None:
+    """Make a taskbar button blink, so a click is never silently swallowed."""
+    import ctypes
+    from ctypes import wintypes
+
+    class FLASHWINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD),
+                    ("uCount", wintypes.UINT),
+                    ("dwTimeout", wintypes.DWORD)]
+
+    info = FLASHWINFO()
+    info.cbSize = ctypes.sizeof(info)
+    info.dwFlags = 0x00000003 | 0x00000000      # FLASHW_ALL | FLASHW_TIMERNOFG
+    info.uCount = 0
+    info.dwTimeout = 0
+    ctypes.windll.user32.FlashWindowEx(hwnd, ctypes.byref(info))
+
+
+def _focus_existing_window(hwnd: int) -> bool:
+    """Bring an already-running copy to the front.  True if it came forward.
+
+    This is the whole reason clicking the icon did nothing.  Windows refuses
+    SetForegroundWindow() from a process that does not already own the
+    foreground - and when the user double-clicks a Desktop icon, Explorer owns
+    it, not us.  The call then fails quietly and the second copy exits, so the
+    click looks like a dead icon even though the app is running.
+
+    The supported way round the restriction is to borrow the foreground thread's
+    input queue for the duration of the call, which is what
+    AttachThreadInput() does here.
+    """
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    try:
+        # Explorer started us, so ask permission to change the foreground.
+        user32.AllowSetForegroundWindow(-1)                 # ASFW_ANY
+        current = kernel32.GetCurrentThreadId()
+        target = user32.GetWindowThreadProcessId(hwnd, None)
+        foreground = user32.GetForegroundWindow()
+        attached = False
+        if target and target != current:
+            attached = bool(user32.AttachThreadInput(current, target, True))
+        try:
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9)                  # SW_RESTORE
+            else:
+                user32.ShowWindow(hwnd, 5)                  # SW_SHOW
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.SetActiveWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(current, target, False)
+        # Do not assume it worked - report what Windows actually agrees with.
+        return user32.GetForegroundWindow() == hwnd
+    except Exception as exc:                                # noqa: BLE001
+        _startup_log.warning("could not raise the running window: %s", exc)
+        return False
+
 
 def enforce_single_instance() -> bool:
     """True if this is the first copy; otherwise focus the running one and False."""
@@ -488,9 +628,22 @@ def enforce_single_instance() -> bool:
             None, False, "KattyVision.SingleInstance.Mutex")
         if ctypes.windll.kernel32.GetLastError() == 183:          # already exists
             hwnd = ctypes.windll.user32.FindWindowW(None, APP_NAME)
-            if hwnd:
-                ctypes.windll.user32.ShowWindow(hwnd, 9)          # SW_RESTORE
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            if not hwnd:
+                # The lock is held but no window answers to our title.  That is
+                # a leftover from a copy that was killed without cleaning up.
+                # Honouring it would leave the icon permanently dead - the user
+                # could never start the app again, by any route.  Take the lock
+                # over and carry on.
+                _startup_log.warning(
+                    "a stale single-instance lock was held with no window behind "
+                    "it; starting anyway so the icon cannot get stuck dead")
+                return True
+            if _focus_existing_window(hwnd):
+                return False
+            # A copy really is running, so do not start a second one - but do
+            # not vanish without a trace either.  Blink the taskbar button so
+            # the user can see the app is already open.
+            _flash_window(hwnd)
             return False
     except Exception:
         pass
@@ -700,6 +853,7 @@ def _tool_paginate(paths, out_dir, opts, ctx) -> tuple[list, list]:
             position=str(opts.get("position", "bottom-right")),
             font_size=float(opts.get("font_size", 9) or 9),
             font=str(opts.get("font", "helv") or "helv"),
+            font_file=str(opts.get("font_file", "") or ""),
             start_number=int(opts.get("start_number", 1) or 1),
             skip_first=int(opts.get("skip_first", 0) or 0),
             style=str(opts.get("style", "arabic") or "arabic"),
@@ -878,8 +1032,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "paginate", "Page numbers",
         "Prints 'Page X of Y' on every page.",
         (
-            ("text", "Format ({page} and {total})", "format",
-             "Page {page} of {total}", None),
+            ("format", "Number layout", "format",
+             "Page {page} of {total}", PAGE_FORMAT_PRESETS),
             ("choice", "Position", "position", "bottom-right",
              (("bottom-right", "Bottom right"), ("bottom-center", "Bottom centre"),
               ("bottom-left", "Bottom left"), ("top-right", "Top right"),
@@ -889,6 +1043,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
              (("helv", "Helvetica"), ("hebo", "Helvetica Bold"),
               ("tiro", "Times Roman"), ("tibo", "Times Bold"),
               ("cour", "Courier"))),
+            ("file", "Or a font file (.ttf / .otf)", "font_file", "", None),
             ("int", "Start numbering from", "start_number", 1, (1, 1000)),
             ("int", "Leave the first N pages unnumbered", "skip_first", 0, (0, 20)),
             ("choice", "Number style", "style", "arabic",
@@ -978,8 +1133,14 @@ class ToolPage:
         self.scroller = wrap
         inner = wrap.inner
         inner.columnconfigure(0, weight=1)
+        # fill="x" but NOT expand=True.  expand made ``page`` stretch to the
+        # canvas height instead of its own content height, so the Options box
+        # was squashed into the leftover space and everything below it was
+        # clipped - the Position and Font rows existed but could never be
+        # scrolled to, because the scroll region was measured from a frame that
+        # never grew.
         page = ttk.Frame(inner, padding=12)
-        page.pack(fill="both", expand=True)
+        page.pack(fill="x")
         page.columnconfigure(0, weight=1)
 
         # ---- a titled header, so the user always knows which job this is
@@ -1076,6 +1237,10 @@ class ToolPage:
                 box = ttk.LabelFrame(page, text="  Options  ", padding=10)
                 box.grid(row=4, column=0, sticky="ew", pady=(px(10), 0))
             box.columnconfigure(0, weight=1)
+            # ``box`` holds exactly one column, and each row is a ui_kit.Field
+            # that does its own two-column layout (label left, control right).
+            # The rows are gridded into column 0 with no columnspan, so the
+            # Field can align its own label and control.
             for row_index, opt in enumerate(self.spec.options):
                 self._add_option(box, row_index, opt)
             # Every control on this page drives the picture, so each one gets a
@@ -1337,7 +1502,7 @@ class ToolPage:
         if kind == "bool":
             var: tk.Variable = tk.BooleanVar(value=bool(default))
             Switch(box, label, value=bool(default), hint=hint, variable=var,
-                   background=CARD).grid(row=row, column=0, columnspan=3,
+                   background=CARD).grid(row=row, column=0,
                                          sticky="ew", pady=px(3))
         elif kind == "int":
             low, high = extra or (0, 9999)
@@ -1347,29 +1512,45 @@ class ToolPage:
                   factory=lambda field: Stepper(
                       field, minimum=low, maximum=high, value=int(default),
                       step=step, width=8, command=var.set)).grid(
-                row=row, column=0, columnspan=3, sticky="ew", pady=px(3))
+                row=row, column=0, sticky="ew", pady=px(3))
         elif kind == "float":
             var = tk.DoubleVar(value=float(default))
             Field(box, label, hint=hint, background=CARD,
                   factory=lambda field: Stepper(
                       field, minimum=0.0, maximum=1000.0, value=float(default),
                       step=0.1, decimals=1, width=8, command=var.set)).grid(
-                row=row, column=0, columnspan=3, sticky="ew", pady=px(3))
+                row=row, column=0, sticky="ew", pady=px(3))
         elif kind == "choice":
             labels = [text for _v, text in extra]
             reverse = {text: str(v) for v, text in extra}
             forward = {str(v): text for v, text in extra}
             if len(extra) <= 3:
                 var = tk.StringVar(value=str(default))
-                widget = Segmented(box, extra, variable=var, fill=True)
-                widget.set(forward.get(str(default), labels[0]))
-                control = Field(box, label, widget, hint=hint, background=CARD)
+                # Built inside the Field via the factory form, exactly like the
+                # drop-down below.  Constructed against ``box`` instead, the
+                # segmented row was laid out by box's own grid - it landed in
+                # row 0, column 1, on top of the Format entry, which is why the
+                # number-style buttons appeared beside the Format box.
+                control = Field(
+                    box, label, hint=hint, background=CARD,
+                    factory=lambda field: Segmented(
+                        field, extra, variable=var, fill=True))
+                control.control.set(forward.get(str(default), labels[0]))
             else:
+                # The control must be parented to the Field, not to ``box``.
+                # Built against ``box`` it was laid out by box's own grid, so it
+                # landed in row 0 next to an unrelated setting and the option it
+                # belonged to ("Position") rendered as a bare label with no
+                # control at all.  The factory form parents it correctly.
                 var = tk.StringVar(value=forward.get(str(default), labels[0]))
-                control = Field(box, label, ttk.Combobox(
-                    box, state="readonly", width=32, values=labels,
-                    textvariable=var), hint=hint, background=CARD)
-            control.grid(row=row, column=0, columnspan=3, sticky="ew",
+                longest = max(len(text) for text in labels) if labels else 12
+                control = Field(
+                    box, label, hint=hint, background=CARD,
+                    factory=lambda field: ttk.Combobox(
+                        field, state="readonly",
+                        width=max(12, min(28, longest + 2)), values=labels,
+                        textvariable=var))
+            control.grid(row=row, column=0, sticky="ew",
                          pady=px(3))
             self._choice_maps = getattr(self, "_choice_maps", {})
             self._choice_maps[key] = reverse
@@ -1377,22 +1558,52 @@ class ToolPage:
             # The seal bench builds a visible box for this *before* the options
             # are built, so reuse that variable when it exists - otherwise the
             # run would read a different one from the one on screen.
+            #
+            # Only the seal image may fall back to the configured seal path.
+            # Every other file option (the pagination font, for instance) starts
+            # empty - falling back to paths.stamp_image put the bank seal's path
+            # and a "Choose..." button on the page-number settings, where the
+            # user had asked for no such thing.
             var = self.option_vars.get(key)
             if var is None:
-                var = tk.StringVar(
-                    value=str(self.app.cfg.resolve("paths.stamp_image")))
-            holder = tk.Frame(box, bg=CARD)
-            ttk.Entry(holder, textvariable=var, width=44).pack(side="left")
-            ttk.Button(holder, text="Choose...",
-                       command=lambda v=var: self._pick_image(v)).pack(
-                side="left", padx=px(8))
-            Field(box, label, holder, hint=hint, background=CARD).grid(
-                row=row, column=0, columnspan=3, sticky="ew", pady=px(3))
+                if key == "seal_image":
+                    var = tk.StringVar(
+                        value=str(self.app.cfg.resolve("paths.stamp_image")))
+                else:
+                    var = tk.StringVar(value=str(default or ""))
+                self.option_vars[key] = var
+            # The picker must be built *inside* the Field.  Built against
+            # ``box`` (the old code) the holder was also laid out by box's own
+            # grid, so it appeared at row 0, column 1 - an orphan entry and a
+            # "Choose..." button sitting on the Format row of a page whose
+            # user had never asked to choose any file.
+            def _build_picker(field: tk.Frame) -> tk.Frame:
+                holder = tk.Frame(field, bg=CARD)
+                ttk.Entry(holder, textvariable=var, width=44).pack(side="left")
+                ttk.Button(holder, text="Choose...",
+                           command=lambda v=var: self._pick_image(v)).pack(
+                    side="left", padx=px(8))
+                return holder
+
+            Field(box, label, hint=hint, background=CARD,
+                  factory=_build_picker).grid(
+                row=row, column=0, sticky="ew", pady=px(3))
+        elif kind == "format":
+            # Drop-down of ready-made layouts instead of a box asking for
+            # "{page} of {total}".  var holds the plain template, so _start()
+            # reads it with no label-to-value mapping, exactly as it read the
+            # old free-text field.
+            var = tk.StringVar(value=str(default))
+            Field(box, label, hint=hint, background=CARD,
+                  factory=lambda field: build_format_picker(
+                      field, extra, var)).grid(
+                row=row, column=0, sticky="ew", pady=px(3))
         else:
             var = tk.StringVar(value=str(default))
-            Field(box, label, ttk.Entry(box, textvariable=var, width=40),
-                  hint=hint, background=CARD).grid(
-                row=row, column=0, columnspan=3, sticky="ew", pady=px(3))
+            Field(box, label, hint=hint, background=CARD,
+                  factory=lambda field: ttk.Entry(
+                      field, textvariable=var, width=40)).grid(
+                row=row, column=0, sticky="ew", pady=px(3))
         self.option_vars[key] = var
 
     # ------------------------------------------------------------- file list
@@ -1464,7 +1675,6 @@ class ToolPage:
                     sources.append((str(path), 0))
             self.sources = sources
             self.page_map.set_sources(sources)
-        self._refresh_seal_preview()
         self._refresh_seal_preview()
 
     def _add_files(self) -> None:
@@ -1906,7 +2116,7 @@ class PreviewPanel:
         if self.doc is None:
             return
         total = self.doc.page_count
-        batch_end = min(total, self._thumb_next + 20)
+        batch_end = min(total, self._thumb_next + 8)
         for index in range(self._thumb_next, batch_end):
             frame = ttk.Frame(self.thumbs_inner)
             frame.pack(fill="x", pady=3)
@@ -1926,7 +2136,7 @@ class PreviewPanel:
             self._thumbs.append((canvas, index))
         self._thumb_next = batch_end
         if self._thumb_next < total:
-            self.after(40, self._build_thumb_batch)
+            self.after(25, self._build_thumb_batch)
 
     def show(self, page_no: int) -> None:
         """Display one page, big, with its plain-English facts."""
@@ -2093,7 +2303,7 @@ class App(ttkb.Window if ttkb else tk.Tk):
         splash.step(0.78, "Getting the details right...")
         self._fit_to_screen()                      # fits + centres on this display
         self._mark_all_steps("waiting", "not started")
-        self.after(120, self._drain_events)
+        self._event_drain_after = self.after(120, self._drain_events)
 
         # The tool check runs tesseract and ghostscript as subprocesses.  It used
         # to block the UI thread right here.  It now runs in the background, but
@@ -2551,7 +2761,10 @@ class App(ttkb.Window if ttkb else tk.Tk):
         self.preset_group.select(str(self.cfg.get("ui.preset", "standard")),
                                  notify=False)
 
-        # ---- 2. the live plan sentence (explain before the user commits)
+        # ---- 2. step on/off switches (the "no seal today" use case)
+        self._build_step_toggles(card)
+
+        # ---- 3. the live plan sentence (explain before the user commits)
         self.plan_bar = tk.Frame(card, bg=ACCENT_SOFT)
         self.plan_bar.grid(row=1, column=0, sticky="ew", pady=(px(11), px(4)))
         self.plan_icon = Icon(self.plan_bar, "sparkle", 15, ACCENT,
@@ -2603,7 +2816,7 @@ class App(ttkb.Window if ttkb else tk.Tk):
 
         # ---- 5. everything else, behind one honest button
         bottom = tk.Frame(card, bg=CARD)
-        bottom.grid(row=3, column=0, sticky="ew", pady=(px(12), 0))
+        bottom.grid(row=5, column=0, sticky="ew", pady=(px(12), 0))
         self.btn_advanced = IconButton(
             bottom, "All other settings", self._open_advanced, icon="settings",
             background=CARD, surface=SURFACE)
@@ -2613,6 +2826,49 @@ class App(ttkb.Window if ttkb else tk.Tk):
                        "need them",
                   style="CardMuted.TLabel").pack(side="left", padx=(px(10), 0))
         self._refresh_plan()
+
+    def _build_step_toggles(self, card: tk.Frame) -> None:
+        """One switch per pipeline step, on the automation page itself.
+
+        This is the "I want automation but not the bank seal" case: the user
+        flips a switch here instead of hunting through Settings.  Any manual
+        flip switches the bundle to "My own workflow" so the plan sentence
+        stays honest about what was chosen.
+        """
+        self.step_vars: dict[str, tk.BooleanVar] = {}
+        panel = Disclosure(
+            card, "Choose which steps run",
+            hint="Turn off anything you do not need - for example the bank seal.",
+            background=CARD, start_open=False)
+        panel.grid(row=3, column=0, sticky="ew", pady=(px(6), 0))
+        self.step_panel = panel
+        for key, label in (
+            ("ocr.enabled", "Make scans searchable (OCR)"),
+            ("compress.enabled", "Shrink the file"),
+            ("pagination.enabled", "Number the pages"),
+            ("stamp.enabled", "Put on the bank seal"),
+            ("split.enabled", "Split into portal-sized parts"),
+            ("cover_page.enabled", "Add a contents page"),
+        ):
+            var = tk.BooleanVar(value=bool(self.cfg.get(key, True)))
+            switch = Switch(panel.body, label, value=var.get(), variable=var,
+                            background=CARD,
+                            command=lambda v, k=key: self._on_step_toggle(k, v))
+            panel.add_row(switch)
+            self.step_vars[key] = var
+
+    def _on_step_toggle(self, key: str, value: bool) -> None:
+        """A step switch moved: remember it and switch to a custom workflow."""
+        self.cfg.set(key, bool(value))
+        if str(self.var_preset.get()) != "custom":
+            self.preset_group.select("custom", notify=False)
+            self.var_preset.set("custom")
+            self.cfg.set("ui.preset", "custom")
+        self._refresh_plan()
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
 
     def _build_limit_steppers(self, limits: tk.Frame) -> None:
         """Editable limits with optional arrow-key adjustments."""
@@ -3178,6 +3434,10 @@ class App(ttkb.Window if ttkb else tk.Tk):
         if apply and preset.settings:
             self.cfg.update(preset.settings)
             self.log_line(f"Option selected: {preset.title}")
+            # Keep the step switches in step with the bundle that was picked.
+            for key, var in getattr(self, "step_vars", {}).items():
+                if key in preset.settings:
+                    var.set(bool(preset.settings[key]))
         self.cfg.set("ui.preset", preset.key)
         if persist:
             self._apply_ui_to_config(persist=True)
@@ -3311,7 +3571,16 @@ class App(ttkb.Window if ttkb else tk.Tk):
         """Background thread: run the pipeline, forward every log line to the UI.
 
         Only plain data crosses the thread boundary - never Tk objects.
+
+        ``Pipeline`` is imported here rather than at module level on purpose.
+        It drags in PyMuPDF and the whole PDF/OCR chain, which measured at
+        ~0.6 s of the start-up that has to finish *before* the loading card can
+        even be drawn.  The user would stare at an empty desktop for all of it.
+        Loading it on the worker means the card is up first and the PDF engine is
+        read from disk while the user is already choosing their files.
         """
+        from .pipeline import Pipeline
+
         logger = None
         handler = None
         try:
@@ -3343,8 +3612,29 @@ class App(ttkb.Window if ttkb else tk.Tk):
 
     def _drain_events(self) -> None:
         """Move worker-thread messages into the widgets (Tk is not thread safe)."""
+        self._event_drain_after = None
+        if not self.winfo_exists():
+            return
         self._process_events()
-        self.after(120, self._drain_events)
+        try:
+            self._event_drain_after = self.after(120, self._drain_events)
+        except tk.TclError:
+            # The window may be closed while worker events are being applied.
+            self._event_drain_after = None
+
+    def destroy(self) -> None:
+        """Cancel the recurring Tk poll before its Tcl command is removed."""
+        after_id = getattr(self, "_event_drain_after", None)
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, ValueError):
+                pass
+            self._event_drain_after = None
+        try:
+            super().destroy()
+        except tk.TclError:
+            pass
 
     def _process_events(self) -> None:
         """Apply everything the worker threads have queued up, right now.
@@ -3752,9 +4042,10 @@ ADVANCED_SPEC: tuple[tuple[str, tuple], ...] = (
         ("int", "Strength, if using the older method", "compress.level",
          (0, 4), "0 = try each strength in turn, 1-4 = fix one strength. "
                  "Ignored by the automatic method", "sliders"),
-        ("text", "What the page number says", "pagination.format", None,
-         "The words around the number. {page} is the number and {total} is "
-         "how many pages there are", "hash"),
+        ("format", "What the page number says", "pagination.format",
+         PAGE_FORMAT_PRESETS,
+         "Pick a finished line. The words around the number are set for you; "
+         "choose 'Write my own...' only if you need something unusual", "hash"),
     )),
     ("Page numbers", (
         ("bool", "Add page numbers", "pagination.enabled",
@@ -3763,21 +4054,25 @@ ADVANCED_SPEC: tuple[tuple[str, tuple], ...] = (
             ("bottom-center", "Bottom centre"), ("bottom-right", "Bottom right"),
             ("bottom-left", "Bottom left"), ("top-right", "Top right"),
             ("top-center", "Top centre"), ("top-left", "Top left"),
-        ), None, "bottom-right"),
+        ), "Where on the page the number is printed", "bottom-right"),
         ("int", "Size of the numbers", "pagination.font_size", (6, 24),
          "9 is a good size for A4 paper", "sun"),
-        # PyMuPDF's built-in PDF fonts.  These names are what the paginate
-        # step passes to page.insert_text(), so the preview renders with the
-        # exact same face the finished filing will carry.
+        # The first five names are PDF's built-in faces; a Windows font file
+        # path (or any .ttf/.otf) is also accepted - it is embedded in the PDF,
+        # so the finished filing shows the exact face even on another PC.
         ("choice", "Font style", "pagination.font", (
             ("helv", "Helvetica"), ("hebo", "Helvetica Bold"),
             ("tiro", "Times Roman"), ("tibo", "Times Bold"),
             ("cour", "Courier"),
         ), "Times Roman looks closest to a typed pleading", "text"),
+        ("file", "Or a font file (.ttf / .otf)", "pagination.font_file",
+         None, "Leave empty to use the Font style above. Any font on this "
+               "PC - e.g. C:\\Windows\\Fonts\\arial.ttf - is embedded in the "
+               "PDF so it prints exactly the same everywhere", "image"),
         ("choice", "Number style", "pagination.style", (
             ("arabic", "1, 2, 3"), ("roman", "i, ii, iii"),
             ("ROMAN", "I, II, III"), ("alpha", "A, B, C"),
-        ), None, "hash"),
+        ), "Roman numerals suit a contents or index section", "hash"),
         ("int", "Start numbering from", "pagination.start_number", (1, 1000),
          "The first printed number. Set 12 and the pages read 12, 13, 14... "
          "when this file continues an already-numbered bundle", "hash"),
@@ -3905,19 +4200,39 @@ class AdvancedDialog(tk.Toplevel):
         book.pack(fill="both", expand=True)
         self.book = book
         for tab_index, (tab_name, rows) in enumerate(ADVANCED_SPEC):
-            page = tk.Frame(book, bg=CARD, padx=px(14), pady=px(12))
+            # Every tab scrolls.  The Page-numbers tab carries a 300 px preview
+            # plus twelve rows, which is taller than the dialog: without a
+            # scrollbar the rows below the preview were simply cut off and the
+            # settings looked missing.  A scrollbar makes that impossible on any
+            # tab, at any DPI, on any screen.
+            page = ScrollFrame(book)
             book.add(page, text=tab_name)
-            page.columnconfigure(0, weight=1)
-            page.tab_name = tab_name          # read back by the search filter
-            page.tab_index = tab_index
+            book.tab(page, padding=(px(4), px(4)))
+            body = page.inner
+            body.configure(style="Card.TFrame")
+            body.columnconfigure(0, weight=1)
+            # The rows are gridded into ``body``, so it - not the ScrollFrame -
+            # is their parent; the tab identity has to live on it for _add_row
+            # to record which tab each setting belongs to (the search filter
+            # reads that back to jump to the right tab).
+            body.tab_name = tab_name
+            body.tab_index = tab_index
             row_offset = 0
             if tab_name == "Page numbers":
-                self.page_number_preview = PageNumberPreview(page)
-                self.page_number_preview.grid(row=0, column=0, sticky="w",
-                                              pady=(0, px(10)))
-                row_offset = 1
+                # The preview is tall and narrow, so it sits beside the rows in
+                # its own column.  It must NOT share a row with a setting: it is
+                # 300 px tall, and a row it occupied would be stretched to that
+                # height, leaving one lonely setting floating in a tall grey
+                # band.  Spanning every row in its own column keeps the rows
+                # evenly spaced while the preview sits alongside them.
+                body.columnconfigure(1, weight=0)
+                self.page_number_preview = PageNumberPreview(body)
+                self.page_number_preview.grid(
+                    row=0, column=1, rowspan=max(1, len(rows)),
+                    sticky="ne", padx=(px(18), px(6)))
+                row_offset = 0
             for index, spec in enumerate(rows):
-                self._add_row(page, index + row_offset, spec)
+                self._add_row(body, index + row_offset, spec)
         self._connect_page_number_preview()
 
         buttons = tk.Frame(wrap, bg=BG)
@@ -4090,12 +4405,30 @@ class AdvancedDialog(tk.Toplevel):
                 # textvariable so the picked label reaches _value_of(); before
                 # this the combo box was never linked and a changed selection
                 # was silently thrown away on Save.
+                #
+                # The width is measured from the labels rather than fixed at 34
+                # characters: a fixed width overflowed the control column on
+                # tabs with a long label ("Where the numbers go"), which pushed
+                # the drop-down into the next row's cell and left the setting
+                # looking missing.  Sizing to content cannot overflow.
                 var = tk.StringVar(value=forward.get(str(current), labels[0]))
+                longest = max(len(text) for text in labels) if labels else 12
                 control = Field(
                     parent, label, hint=hint or "", background=CARD,
                     factory=lambda field: ttk.Combobox(
-                        field, state="readonly", width=34, values=labels,
+                        field, state="readonly",
+                        width=max(12, min(28, longest + 2)), values=labels,
                         textvariable=var))
+        elif kind == "format":
+            # Same drop-down as the Page-numbers tool page.  An empty setting
+            # used to mean an empty page number, so fall back to the usual
+            # line rather than showing a blank box the user has to fix.
+            var = tk.StringVar(
+                value=str(current or "Page {page} of {total}"))
+            control = Field(
+                parent, label, hint=hint or "", background=CARD,
+                factory=lambda field: build_format_picker(
+                    field, options, var))
         elif kind == "file":
             var = tk.StringVar(value=str(current or ""))
             control = Field(
@@ -4129,6 +4462,7 @@ class AdvancedDialog(tk.Toplevel):
             "pagination.skip_first_pages": "skip_first",
             "pagination.start_number": "start_number",
             "pagination.font": "font",
+            "pagination.font_file": "font_file",
             "pagination.style": "style",
         }
         for row in self.rows:

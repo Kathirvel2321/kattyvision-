@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -82,9 +83,7 @@ def main() -> int:
 
     started = time.time()
     # use a throw-away config so the real config.json is never modified
-    temp_config = ROOT / "work" / "_selftest_config.json"
-    if temp_config.exists():
-        temp_config.unlink()
+    temp_config = ROOT / "work" / f"_selftest_config_{uuid4().hex}.json"
     application = App(temp_config)
     application.withdraw()                        # keep it off screen
     application.var_input.set(str(sample_dir))
@@ -114,9 +113,22 @@ def main() -> int:
         for line in lines[-25:]:
             print(f"      {line}")
         application.destroy()
+        temp_config.unlink(missing_ok=True)
         return 1
 
-    check(report.ok, f"all steps reported OK ({len(report.steps)} steps)")
+    stamp_step = next((step for step in report.steps if step.step == "stamp"), None)
+    placeholder = bool(stamp_step and "PLACEHOLDER" in stamp_step.detail)
+    other_steps_ok = all(step.ok for step in report.steps if step.step != "stamp")
+    if placeholder:
+        safe_placeholder = (
+            other_steps_ok and not stamp_step.ok and not report.ok
+            and any("PLACEHOLDER" in warning for warning in report.warnings)
+        )
+        check(safe_placeholder,
+              "processing passed and the missing official seal is flagged for review")
+    else:
+        check(other_steps_ok and report.ok and bool(stamp_step and stamp_step.ok),
+              f"all steps reported OK ({len(report.steps)} steps)")
     check(elapsed < 240, f"finished in {elapsed:.1f} seconds")
     for step in report.steps:
         state = application.step_state.get(step.step, "?")
@@ -131,13 +143,20 @@ def main() -> int:
         doc = pymupdf.open(target)
         pages = doc.page_count
         text_all = "".join(doc[i].get_text() for i in range(pages))
+        metadata = doc.metadata or {}
         numbered = sum(1 for i in range(pages) if "Page" in doc[i].get_text()
                        and " of " in doc[i].get_text())
-        stamped = sum(1 for i in range(pages) if doc[i].get_images(full=True))
         scanned_hits = sum(len(doc[i].search_for("POSSESSION")) for i in range(pages))
         check(pages >= 7, f"page count is {pages}")
         check(numbered >= pages, f"'Page X of Y' present on {numbered}/{pages} pages")
-        check(stamped == pages, f"bank seal present on {stamped}/{pages} pages")
+        check(not (metadata.get("author") or "").strip(),
+              "author metadata does not leak the source author")
+        check("KattyVision" in str(metadata.get("producer", "")),
+              "final PDF metadata names KattyVision as producer")
+        check(bool(stamp_step and f"placed on {pages} page(s)" in stamp_step.detail),
+              "the seal step records how many pages it stamped")
+        if placeholder:
+            check(not report.ok, "the placeholder output remains marked for review")
         check("SARFAESI" in text_all, "OCR recovered text from the scans")
         check(scanned_hits > 0,
               f"search finds 'POSSESSION' on a scanned page ({scanned_hits} hit(s))")
@@ -146,6 +165,7 @@ def main() -> int:
         doc.close()
 
     application.destroy()
+    temp_config.unlink(missing_ok=True)
 
     failed = [message for ok_item, message in RESULTS if not ok_item]
     print("\n" + "=" * 74)

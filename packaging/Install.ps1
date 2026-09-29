@@ -16,9 +16,10 @@
 
     Run:  double click "Install.cmd"     (or)
           powershell -ExecutionPolicy Bypass -File .\Install.ps1
+    For a validation install without per-user shortcuts, add -NoShortcuts -NoLaunch.
 #>
 [CmdletBinding()]
-param([switch]$Quiet, [switch]$NoLaunch)
+param([switch]$Quiet, [switch]$NoLaunch, [switch]$NoShortcuts)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -84,40 +85,43 @@ if (-not (Test-Path $config)) {
 # ---------------------------------------------------------------- 3. shortcuts
 Head "3. Creating your icons"
 
-$desktop = [Environment]::GetFolderPath('Desktop')
-$programs = [Environment]::GetFolderPath('Programs')
-$menuFolder = Join-Path $programs "KattyVision"
-New-Item -ItemType Directory -Force -Path $menuFolder | Out-Null
-
-$icon = Join-Path $Root "assets\app.ico"
 $arguments = "-m court_ocr.app"
+if ($NoShortcuts) {
+    Ok "shortcuts skipped (-NoShortcuts)"
+} else {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $programs = [Environment]::GetFolderPath('Programs')
+    $menuFolder = Join-Path $programs "KattyVision"
+    New-Item -ItemType Directory -Force -Path $menuFolder | Out-Null
 
-function New-KattyShortcut {
-    param([string]$Path, [string]$Description)
+    $icon = Join-Path $Root "assets\app.ico"
+    function New-KattyShortcut {
+        param([string]$Path, [string]$Description)
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($Path)
+        $link.TargetPath = $pythonw            # pythonw = no black console window
+        $link.Arguments = $arguments
+        $link.WorkingDirectory = $Root
+        if (Test-Path $icon) { $link.IconLocation = "$icon,0" }
+        $link.Description = $Description
+        $link.Save()
+    }
+
+    New-KattyShortcut -Path (Join-Path $desktop "KattyVision.lnk") `
+        -Description "KattyVision - local, offline court filing preparation"
+    New-KattyShortcut -Path (Join-Path $menuFolder "KattyVision.lnk") -Description "KattyVision"
+    Ok "Desktop icon and Start Menu entry are ready"
+
+    # the folder to drop the case documents into
+    $documentsLink = Join-Path $desktop "KattyVision - Documents.lnk"
+    if (Test-Path $documentsLink) { Remove-Item $documentsLink -Force -ErrorAction SilentlyContinue }
     $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut($Path)
-    $link.TargetPath = $pythonw            # pythonw = no black console window
-    $link.Arguments = $arguments
-    $link.WorkingDirectory = $Root
-    if (Test-Path $icon) { $link.IconLocation = "$icon,0" }
-    $link.Description = $Description
-    $link.Save()
+    $folderLink = $shell.CreateShortcut($documentsLink)
+    $folderLink.TargetPath = (Join-Path $Root "input")
+    $folderLink.Description = "Drop the case documents in here, then open KattyVision"
+    $folderLink.Save()
+    Ok "a 'KattyVision - Documents' folder icon is on your Desktop"
 }
-
-New-KattyShortcut -Path (Join-Path $desktop "KattyVision.lnk") `
-    -Description "KattyVision - local, offline court filing preparation"
-New-KattyShortcut -Path (Join-Path $menuFolder "KattyVision.lnk") -Description "KattyVision"
-Ok "Desktop icon and Start Menu entry are ready"
-
-# the folder to drop the case documents into
-$documentsLink = Join-Path $desktop "KattyVision - Documents.lnk"
-if (Test-Path $documentsLink) { Remove-Item $documentsLink -Force -ErrorAction SilentlyContinue }
-$shell = New-Object -ComObject WScript.Shell
-$folderLink = $shell.CreateShortcut($documentsLink)
-$folderLink.TargetPath = (Join-Path $Root "input")
-$folderLink.Description = "Drop the case documents in here, then open KattyVision"
-$folderLink.Save()
-Ok "a 'KattyVision - Documents' folder icon is on your Desktop"
 
 # ------------------------------------------------------------- 4. what is left
 Head "4. What is ready, and what is still missing"
@@ -166,19 +170,23 @@ if ($sealGood) {
 # ------------------------------------------------------------------ 5. done
 Head "All done"
 Write-Host ""
-Write-Host "  Your Desktop now has:" -ForegroundColor Green
-Write-Host "     [icon]  KattyVision                 <- double click to open the app"
-Write-Host "     [icon]  KattyVision - Documents     <- put the case PDFs in here"
-Write-Host ""
-Write-Host "  It is also in the Start Menu under 'KattyVision'."
-Write-Host ""
-Write-Host "  Putting a case together:"
-Write-Host "     1. Drop the case documents into the 'KattyVision - Documents' folder"
-Write-Host "     2. Open KattyVision, press RUN"
-Write-Host "     3. Finished files appear in the 'output' folder"
-Write-Host ""
-Write-Host "  Nothing was installed on your PC. To remove the program later, just"
-Write-Host "  delete this whole folder (and the two desktop icons)."
+if ($NoShortcuts) {
+    Write-Host "  Validation install complete; no per-user shortcuts were created."
+} else {
+    Write-Host "  Your Desktop now has:" -ForegroundColor Green
+    Write-Host "     [icon]  KattyVision                 <- double click to open the app"
+    Write-Host "     [icon]  KattyVision - Documents     <- put the case PDFs in here"
+    Write-Host ""
+    Write-Host "  It is also in the Start Menu under 'KattyVision'."
+    Write-Host ""
+    Write-Host "  Putting a case together:"
+    Write-Host "     1. Drop the case documents into the 'KattyVision - Documents' folder"
+    Write-Host "     2. Open KattyVision, press RUN"
+    Write-Host "     3. Finished files appear in the 'output' folder"
+    Write-Host ""
+    Write-Host "  Nothing was installed on your PC. To remove the program later, just"
+    Write-Host "  delete this whole folder (and the two desktop icons)."
+}
 Write-Host ""
 
 if (-not $NoLaunch) {

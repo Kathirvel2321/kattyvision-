@@ -1737,6 +1737,16 @@ class SealPreview(tk.Frame):
         else:
             self._after_id = self.after(90, self._draw)
 
+    def destroy(self) -> None:
+        """Cancel a debounced preview repaint before this widget is removed."""
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except (ValueError, tk.TclError):
+                pass
+            self._after_id = None
+        super().destroy()
+
     def _draw(self) -> None:
         self._after_id = None
         if not self.doc_path or not self.page_count:
@@ -1908,6 +1918,7 @@ class PageNumberPreview(tk.Frame):
                    skip_first: int | None = None,
                    start_number: int | None = None,
                    font: str | None = None,
+                   font_file: str | None = None,
                    style: str | None = None) -> None:
         if format is not None:
             self.format = str(format)
@@ -1923,6 +1934,8 @@ class PageNumberPreview(tk.Frame):
             self.start_number = max(1, int(start_number))
         if font is not None:
             self.font = str(font)
+        if font_file is not None:
+            self.font_file = str(font_file or "").strip()
         if style is not None:
             self.style = str(style)
         self.redraw()
@@ -1952,17 +1965,40 @@ class PageNumberPreview(tk.Frame):
                     page=_label(number, self.style),
                     total=_label(total, self.style),
                     roman=_label(number, "ROMAN"),
+                    # Same placeholders as the real stamper, so a layout that
+                    # previews correctly here cannot fail on the finished file.
+                    roman_total=_label(total, "ROMAN"),
                 )
             except (KeyError, ValueError, IndexError):
                 text = "Page 1 of 20"
-            width = pymupdf.get_text_length(text, fontname=self.font,
-                                            fontsize=self.font_size) + 6
+            # A .ttf/.otf wins over the built-in name; register it into the
+            # preview document so the render shows the real face.
+            font_path = Path(getattr(self, "font_file", "") or "")
+            if font_path.is_file() and font_path.suffix.lower() in (
+                    ".ttf", ".otf", ".ttc"):
+                used_font = "paginpreview"
+                try:
+                    page.insert_font(fontname=used_font, fontfile=str(font_path))
+                    font_obj = pymupdf.Font(fontfile=str(font_path))
+                except Exception:
+                    used_font, font_obj = self.font, None
+            else:
+                used_font, font_obj = self.font, None
+            if font_obj is not None:
+                width = font_obj.text_length(text, fontsize=self.font_size) + 6
+            else:
+                width = pymupdf.get_text_length(text, fontname=used_font,
+                                                fontsize=self.font_size) + 6
             height = max(self.font_size * 1.5, 14.0)
             rect = anchor_rect(page, width, height, self.position,
                                8 * 72 / 25.4, 4 * 72 / 25.4)
-            draw_text(page, rect, text, font=self.font, font_size=self.font_size,
+            draw_text(page, rect, text, font=used_font, font_size=self.font_size,
                       color=(0, 0, 0), align=1)
-            hint = f"Preview: {text} - {self.position.replace('-', ' ')}"
+            face = font_path.name if font_obj is not None else {
+                "helv": "Helvetica", "hebo": "Helvetica Bold",
+                "tiro": "Times Roman", "tibo": "Times Bold",
+                "cour": "Courier"}.get(used_font, used_font)
+            hint = f"Preview: {text} - {face} - {self.position.replace('-', ' ')}"
         else:
             hint = "Preview: page numbers are turned off"
 

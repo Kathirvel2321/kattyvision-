@@ -10,6 +10,7 @@ Step map (matches the old manual workflow):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
@@ -22,6 +23,7 @@ from typing import Callable, Iterable, Sequence
 
 import pymupdf
 
+from . import __version__
 from .util import MB, apply_template, mm2pt, safe_filename, sorted_naturally
 
 LOGGER = logging.getLogger("court_ocr")
@@ -146,6 +148,44 @@ def font_ascender(font: str, font_size: float) -> float:
     return 0.8 * font_size
 
 
+def resolve_font(font: str) -> str:
+    """Map a configured font name onto something ``page.insert_text`` accepts.
+
+    Two kinds of value arrive here:
+
+    * a built-in PDF base-14 name (``helv``, ``tiro``, ...) - returned as-is;
+    * a path to a ``.ttf``/``.otf`` file, which is registered with PyMuPDF once
+      and then referred to by the alias it was registered under.
+
+    Registration is idempotent: ``insert_font`` is cheap when the file is
+    already known, so calling this per page costs nothing extra.  If the file
+    cannot be read, the original name is returned and the caller falls back to
+    whatever PyMuPDF does with it (a warning is logged so the run report shows
+    why the numbers came out in the default face).
+    """
+    name = str(font or "helv").strip()
+    if not name:
+        return "helv"
+    # Built-in names and previously-registered aliases pass straight through.
+    if "\\" not in name and "/" not in name and not name.lower().endswith(
+            (".ttf", ".otf", ".ttc")):
+        return name
+    path = Path(name)
+    if not path.is_file():
+        LOGGER.warning("[paginate] font file not found: %s - using Helvetica", name)
+        return "helv"
+    alias = "pagin" + hashlib.sha1(str(path.resolve()).lower().encode()).hexdigest()[:8]
+    try:
+        # A Document-scoped font must be inserted into every document that uses
+        # it, which is why add_page_numbers calls this helper with its doc.
+        pymupdf.Font(fontfile=str(path))            # validate it can be loaded
+    except Exception as exc:
+        LOGGER.warning("[paginate] cannot read font %s (%s) - using Helvetica",
+                       name, exc)
+        return "helv"
+    return alias
+
+
 def draw_text(
     page: pymupdf.Page,
     rect: pymupdf.Rect,
@@ -188,7 +228,10 @@ def draw_text(
             if not line.strip():
                 baseline += step
                 continue
-            width = pymupdf.get_text_length(line, fontname=font, fontsize=font_size)
+            try:
+                width = pymupdf.get_text_length(line, fontname=font, fontsize=font_size)
+            except Exception:
+                width = len(line) * font_size * 0.55
             if align == ALIGN_CENTER:
                 x = rect.x0 + (rect.width - width) / 2.0
             elif align == ALIGN_RIGHT:
@@ -535,6 +578,7 @@ def add_page_numbers(
     fmt: str = "Page {page} of {total}",
     position: str = "bottom-center",
     font: str = "helv",
+    font_file: str | None = None,
     font_size: float = 9.0,
     margin_mm: float = 8.0,
     start_number: int = 1,
@@ -544,7 +588,18 @@ def add_page_numbers(
     background: bool = False,
     progress: ProgressFn | None = None,
 ) -> PaginateResult:
-    """Burn page numbers into every page (except the skipped ones)."""
+    """Burn page numbers into every page (except the skipped ones).
+
+    Two ways to name the face, and both are in use:
+
+    * ``font_file`` - a path to a ``.ttf``/``.otf``.  Set by the "Page numbers"
+      tool page, where the user picks a file with a Choose... button.  It wins
+      over ``font`` when present, and an empty string means "not chosen", not
+      "use this literal name".
+    * ``font`` - a built-in base-14 name, or a path.  The pipeline resolves a
+      configured ``pagination.font_file`` into a path and passes it here, so
+      this function must still cope with a path arriving through ``font``.
+    """
     doc_path, out_path = Path(doc_path), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result = PaginateResult(path=out_path)
@@ -554,21 +609,96 @@ def add_page_numbers(
         last = max(skip_first, total_pages - max(0, skip_last))
         counted = max(1, last - skip_first)
         margin = mm2pt(margin_mm)
+        font_obj = None
+        # A custom .ttf/.otf is embedded per page, under an alias the drawing
+        # code can then refer to by name.  Two callers reach here with the face
+        # chosen in different ways - the tool page hands over a separate
+        # ``font_file`` (empty string when the user picked nothing), and the
+        # pipeline folds a configured font file into ``font`` - so take whichever
+        # is a real path and fall back to the built-in name.
+        chosen = str(font_file or "").strip() or str(font or "helv").strip()
+        used_font = "helv"
+        font_file_path: Path | None = None
+        if "\\" in chosen or "/" in chosen or chosen.lower().endswith(
+                (".ttf", ".otf", ".ttc")):
+            font_path = Path(chosen)
+            if font_path.is_file():
+                # NOTE: str() has to wrap the path BEFORE .lower().  Written the
+                # other way round it calls .lower() on a Path, which has no such
+                # method, and the whole font feature dies the moment a user
+                # actually picks a file.  The alias only has to be stable per
+                # file, so the lowercase full path is a good key.
+                used_font = "pagin" + hashlib.sha1(
+                    str(font_path.resolve()).lower().encode()).hexdigest()[:8]
+                try:
+                    # get_text_length only knows the base-14 names, so widths
+                    # for an embedded face come from a Font object instead.
+                    # Loading it here also proves the file is readable before
+                    # any page is touched.
+                    font_obj = pymupdf.Font(fontfile=str(font_path))
+                except Exception as exc:
+                    LOGGER.warning("[paginate] cannot use font %s (%s) - "
+                                   "falling back to Helvetica", chosen, exc)
+                    used_font = "helv"
+                    font_obj = None
+                else:
+                    font_file_path = font_path
+            else:
+                LOGGER.warning("[paginate] font file not found: %s - "
+                               "using Helvetica", chosen)
+                used_font = "helv"
+        else:
+            used_font = chosen
         for index in range(skip_first, last):
             page = doc[index]
+            if font_file_path is not None:
+                # Registration is per PAGE, not per document: PyMuPDF has
+                # Page.insert_font() and no Document.insert_font(), so calling
+                # it on the document raises AttributeError and the font is
+                # silently replaced by Helvetica.  Registered once per page here
+                # so every page that gets a number carries the real face.
+                try:
+                    page.insert_font(fontname=used_font,
+                                     fontfile=str(font_file_path))
+                except Exception as exc:
+                    LOGGER.warning("[paginate] could not embed %s on page %d "
+                                   "(%s) - using Helvetica for this page",
+                                   chosen, index + 1, exc)
+                    used_font = "helv"
+                    font_obj = None
+                    font_file_path = None
             number = start_number + (index - skip_first)
-            text = str(fmt).format(
-                page=_label(number, style),
-                total=_label(counted, style),
-                roman=_roman(number),
-            )
+            # {page}/{total} follow the chosen Number style, {roman} and
+            # {roman_total} are always Roman, so "Page i of xx" is available
+            # even when the style is 1, 2, 3.  A hand-typed layout can contain
+            # anything, so an unknown placeholder falls back to the plain
+            # number rather than raising and abandoning the whole job.
             try:
-                width = pymupdf.get_text_length(text, fontname=font, fontsize=font_size) + 6
+                text = str(fmt).format(
+                    page=_label(number, style),
+                    total=_label(counted, style),
+                    roman=_roman(number),
+                    roman_total=_roman(counted),
+                )
+            except Exception as exc:                        # noqa: BLE001
+                LOGGER.warning("[paginate] layout %r could not be filled in "
+                               "(%s) - falling back to 'Page X of Y'",
+                               fmt, exc)
+                text = "Page {page} of {total}".format(
+                    page=_label(number, style),
+                    total=_label(counted, style),
+                )
+            try:
+                if font_obj is not None:
+                    width = font_obj.text_length(text, fontsize=font_size) + 6
+                else:
+                    width = pymupdf.get_text_length(
+                        text, fontname=used_font, fontsize=font_size) + 6
                 height = max(font_size * 1.5, 14.0)
                 rect = anchor_rect(page, width, height, position, margin, margin * 0.5)
                 if background:
                     page.draw_rect(rect, color=None, fill=(1, 1, 1), overlay=True)
-                if draw_text(page, rect, text, font=font, font_size=font_size,
+                if draw_text(page, rect, text, font=used_font, font_size=font_size,
                              color=(0, 0, 0), align=ALIGN_CENTER):
                     result.pages_numbered += 1
                 else:
@@ -854,7 +984,15 @@ def _write_part(
                     pass
             if title:
                 try:
-                    out.set_metadata({"title": title, "producer": "court_ocr"})
+                    producer = f"KattyVision {__version__}"
+                    out.set_metadata({
+                        "title": title,
+                        "author": "",
+                        "subject": "",
+                        "keywords": "",
+                        "creator": producer,
+                        "producer": producer,
+                    })
                 except Exception:
                     pass
             _save_compact(out, dest)

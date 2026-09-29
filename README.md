@@ -125,7 +125,9 @@ reading or writing case documents in someone else's user profile.
    `Exhibit 2` comes before `Exhibit 10`).
 2. Double-click **`KattyVision.bat`** (or the KattyVision icon on the Desktop).
 3. Tick the steps, press **RUN**, wait for the log to say `FINISHED`.
-4. Finished files land in `output\<CASE NAME>\`.
+4. Finished files land in `output\<CASE NAME>\`. If that folder already has
+   PDFs from an earlier run, the new files go into a unique `Run_...` folder;
+   earlier filing outputs are left in place.
 
 ### Command line (for batch/multiple cases)
 
