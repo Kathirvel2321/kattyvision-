@@ -48,6 +48,41 @@ try {
 }
 Write-Ok "$pyVersion"
 
+# ------------------------------------------------- 1b. working folders + config
+# config.json is per-machine and deliberately NOT in git, so create it from the
+# shipped example the first time this PC runs the setup.  Every folder the
+# program writes to is created up front, so a fresh install is never missing
+# input\, output\, work\ or logs\.
+$example = Join-Path $Root "config.example.json"
+$config = Join-Path $Root "config.json"
+if (-not (Test-Path $config)) {
+    if (Test-Path $example) {
+        Copy-Item $example $config
+        Write-Ok "settings created: config.json (from config.example.json)"
+    } else {
+        Write-Warn "config.example.json not found - the program will use its built-in defaults"
+    }
+} else {
+    Write-Ok "settings: config.json (kept, not overwritten)"
+}
+foreach ($folder in @("input", "output", "work", "logs")) {
+    $path = Join-Path $Root $folder
+    if (-not (Test-Path $path)) {
+        New-Item -ItemType Directory -Force -Path $path | Out-Null
+    }
+}
+Write-Ok "folders ready: input, output, work, logs"
+
+$realSeal = Join-Path $Root "assets\stamp.png"
+if (Test-Path $realSeal) {
+    Write-Ok "bank seal     : assets\stamp.png"
+} else {
+    Write-Warn "no real bank seal yet (assets\stamp.png)."
+    Write-Host "        A PLACEHOLDER seal will be stamped and the step reported as CHECK."
+    Write-Host "        Put the bank's official transparent PNG at assets\stamp.png"
+    Write-Host "        before filing anything with the court."
+}
+
 # ---------------------------------------------------------- 2. pip packages
 if (-not $SkipPip) {
     Write-Info "installing Python packages (pymupdf, pillow)..."

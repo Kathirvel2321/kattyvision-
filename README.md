@@ -61,11 +61,27 @@ powershell -ExecutionPolicy Bypass -File .\SETUP.ps1
   (`pymupdf`, `pillow`).
 * Add `-WithGhostscript` if you want the strongest possible compression
   (optional, free, ~65 MB).
-* Finish with a built-in check:
+* Finish with a built-in check. It prints `READY` and exits `0` only when
+  everything is in place; any problem is listed with a `!` and exits `1`:
 
 ```powershell
 python -m court_ocr.cli --doctor
 ```
+
+> **Before the first real filing**, drop the bank's official transparent seal
+> PNG in as `assets\stamp.png`. Until you do, the program uses
+> `assets\stamp_PLACEHOLDER.png`, reports the stamp step as `CHECK` rather
+> than `OK`, and prints a loud warning - a stand-in seal must never look like
+> a finished filing. `--doctor` also fails while the real seal is missing.
+
+### Settings
+
+`config.json` is created from `config.example.json` on first run and is
+**not** tracked in git, so each machine keeps its own case name, recent folders
+and window position. Editing it is safe. All paths may be relative (resolved
+against the program folder) or absolute; a path left over from another PC is
+detected, reported, and replaced with the local folder rather than silently
+reading or writing case documents in someone else's user profile.
 
 ---
 
@@ -168,9 +184,12 @@ so that file is the only place to look.
   fine for internal use), Pillow (MIT), Ghostscript (AGPL, optional).
   Note the AGPL terms if this software itself is ever distributed or offered as
   a network service to third parties.
-* **The seal** - the program ships with a *placeholder* seal so you can rehearse
-  the whole flow. Replace `assets\stamp.png` with the bank's real transparent
-  PNG before filing.
+* **The seal** - the program ships with a *placeholder* seal
+  (`assets\stamp_PLACEHOLDER.png`) so you can rehearse the whole flow. Replace
+  it with the bank's real transparent PNG saved as `assets\stamp.png` before
+  filing. While the real seal is missing the stamp step is reported as `CHECK`,
+  never `OK`, and the run exits non-zero - a stand-in seal must not be mistaken
+  for a finished filing.
 * **Always verify before uploading** - check the page count, the "Page X of Y"
   footer, the seal position and the OCR text on a couple of scanned pages.
   The per-case CSV report lists every step with sizes and timings.
@@ -180,13 +199,14 @@ so that file is the only place to look.
 ## 7. Project layout
 
 ```
-config.json               all settings (safe to edit)
+config.example.json          template for config.json (per-machine, not in git)
+config.json                  your settings (created by SETUP.ps1, safe to edit)
 SETUP.ps1                 one-time installer (Python packages + Tesseract)
 INSTALL.ps1               creates the Desktop / Start Menu icons
 UNINSTALL.ps1             removes those icons again (nothing else is touched)
 Run Court OCR.bat         double-click launcher for staff
-requirements.txt          two Python packages
-assets/                   app icon, logo, placeholder bank seal
+requirements.txt          two required Python packages (+ commented optionals)
+assets/                   app icon, logo, placeholder seal (real seal is NOT in git)
 court_ocr/
     app.py                desktop app:  python -m court_ocr.app
     cli.py                command line: python -m court_ocr.cli
