@@ -179,7 +179,7 @@ Exit code is `0` when every step succeeded, `1` when something needs a look,
 | `ocr.oversample_dpi` | Higher = more accurate, slower. 300 is a good balance | `300` |
 | `ocr.jobs` | Parallel OCR workers, `0` = all cores minus one | `0` |
 | `compress.level` | `1` lossless, `2` downsample images, `3` strongest (Ghostscript) | `2` |
-| `pagination.format` | Any text with `{page}` and `{total}` | `Page {page} of {total}` |
+| `pagination.format` | Any text with `{page}` and `{total}` | `{page}` |
 | `stamp.pages` | `all`, `first`, `last`, `odd`, `even` or `1,3,5-9` | `all` |
 | `stamp.position` | `bottom-right`, `top-left`, ... | `bottom-right` |
 | `stamp.remove_white` | Key out a white paper background on a scanned seal | `false` |

@@ -462,7 +462,7 @@ TIP_TEXT: dict[str, str] = {
 PAGE_FORMAT_CUSTOM = "__custom__"
 
 PAGE_FORMAT_PRESETS: tuple[tuple[str, str], ...] = (
-    ("Page {page} of {total}",        "Page 1 of 20"),
+    ("{page}",                        "1"),
     ("{page} of {total}",             "1 of 20"),
     ("{page} / {total}",              "1 / 20"),
     ("[{page} of {total}]",           "[1 of 20]"),
@@ -800,6 +800,7 @@ def _tool_ocr(paths, out_dir, opts, ctx) -> tuple[list, list]:
             dpi=int(opts.get("dpi", 300) or 300),
             jobs=int(opts.get("jobs", 0) or 0),
             mode=str(opts.get("mode", "skip_text") or "skip_text"),
+            progress=ctx["progress"],
         )
         outputs.append(result.path)
         if not result.ok:
@@ -849,7 +850,7 @@ def _tool_paginate(paths, out_dir, opts, ctx) -> tuple[list, list]:
         ctx["progress"](f"file {index} of {len(paths)}: {path.name}")
         pag = pdf_ops.add_page_numbers(
             path, out_dir / _out_name(path, "_numbered"),
-            fmt=str(opts.get("format", "Page {page} of {total}")),
+            fmt=str(opts.get("format", "{page}")),
             position=str(opts.get("position", "bottom-right")),
             font_size=float(opts.get("font_size", 9) or 9),
             font=str(opts.get("font", "helv") or "helv"),
@@ -857,6 +858,7 @@ def _tool_paginate(paths, out_dir, opts, ctx) -> tuple[list, list]:
             start_number=int(opts.get("start_number", 1) or 1),
             skip_first=int(opts.get("skip_first", 0) or 0),
             style=str(opts.get("style", "arabic") or "arabic"),
+            progress=ctx["progress"],
         )
         outputs.append(pag.path)
     return outputs, warnings
@@ -886,6 +888,7 @@ def _tool_stamp(paths, out_dir, opts, ctx) -> tuple[list, list]:
             opacity=float(opts.get("opacity", 0.9) or 0.9),
             nudge_x_mm=float(opts.get("nudge_x", 0) or 0),
             nudge_y_mm=float(opts.get("nudge_y", 0) or 0),
+            progress=ctx["progress"],
         )
         outputs.append(stamped.path)
         if not stamped.ok:
@@ -968,6 +971,7 @@ def _tool_split(paths, out_dir, opts, ctx) -> tuple[list, list]:
             keep_bookmark_boundaries=bool(opts.get("keep_bookmarks", True)),
             name_template="{case}_Part{index:02d}.pdf",
             case=path.stem,
+            progress=ctx["progress"],
         )
         outputs.extend(parts.files)
         if not parts.files:
@@ -1033,7 +1037,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Prints 'Page X of Y' on every page.",
         (
             ("format", "Number layout", "format",
-             "Page {page} of {total}", PAGE_FORMAT_PRESETS),
+             "{page}", PAGE_FORMAT_PRESETS),
             ("choice", "Position", "position", "bottom-right",
              (("bottom-right", "Bottom right"), ("bottom-center", "Bottom centre"),
               ("bottom-left", "Bottom left"), ("top-right", "Top right"),
@@ -1368,10 +1372,19 @@ class ToolPage:
         self.seal_pages = Segmented(
             left, (("all", "Every page"), ("first", "First only"),
                    ("last", "Last only"), ("odd", "Odd pages"),
-                   ("even", "Even pages")),
+                   ("even", "Even pages"), ("custom", "Custom")),
             variable=self.var_seal_pages, fill=False)
         self.seal_pages.pack(anchor="w")
         self.var_seal_pages.trace_add("write", self._on_seal_pages)
+        self.seal_custom_var = tk.StringVar(value="1")
+        custom_pages = tk.Frame(left, bg=CARD)
+        custom_pages.pack(anchor="w", pady=(px(8), 0))
+        ttk.Label(custom_pages, text="Page numbers (e.g. 1,3,5-9)",
+                  style="CardMuted.TLabel").pack(side="left", padx=(0, px(8)))
+        self.seal_custom_entry = ttk.Entry(
+            custom_pages, width=18, textvariable=self.seal_custom_var)
+        self.seal_custom_entry.pack(side="left")
+        self.seal_custom_var.trace_add("write", self._on_seal_pages)
 
         # Size and strength, as horizontal volume-bar style sliders.  Built
         # last so they sit under the choices rather than above them.
@@ -1473,6 +1486,11 @@ class ToolPage:
             self.page_stepper.set(1, notify=True)
         elif spec == "last":
             self.page_stepper.set(total, notify=True)
+        elif spec == "custom":
+            from .stamp import parse_page_spec
+            pages = parse_page_spec(self.seal_custom_var.get(), total)
+            if pages:
+                self.page_stepper.set(pages[0] + 1, notify=True)
 
     def _refresh_seal_preview(self) -> None:
         """Point the preview at the first chosen file and the chosen seal."""
@@ -1498,6 +1516,11 @@ class ToolPage:
         paths stay as entries.
         """
         kind, label, key, default, extra = opt
+        if self.spec.key == "compress":
+            if key == "preset":
+                default = self.app.cfg.get("quality.preset", default)
+            elif key == "target_mb":
+                default = self.app.cfg.get("compress.target_size_mb", default)
         hint = TIP_TEXT.get(key, "")
         if kind == "bool":
             var: tk.Variable = tk.BooleanVar(value=bool(default))
@@ -1785,7 +1808,9 @@ class ToolPage:
             # is what gets written.
             opts["nudge_x"] = self.nudge_x
             opts["nudge_y"] = self.nudge_y
-            opts["pages"] = str(self.var_seal_pages.get() or "all")
+            page_choice = str(self.var_seal_pages.get() or "all")
+            opts["pages"] = (self.seal_custom_var.get().strip()
+                             if page_choice == "custom" else page_choice)
         out_text = self.var_out.get().strip()
         out_dir = Path(out_text) if out_text else self.paths[0].parent
         if not out_dir.is_dir():
@@ -3322,6 +3347,15 @@ class App(ttkb.Window if ttkb else tk.Tk):
         self._on_preset(apply=False, persist=False)
         self.var_max_pages.set(str(self.cfg.get("split.max_pages_per_file", 50)))
         self.var_max_mb.set(str(self.cfg.get("compress.target_size_mb", 4.5)))
+        compress = self.tool_pages.get("compress")
+        if compress is not None:
+            preset = str(self.cfg.get("quality.preset", "balanced"))
+            labels = getattr(compress, "_choice_maps", {}).get("preset", {})
+            display = next((label for label, value in labels.items()
+                            if value == preset), preset)
+            compress.option_vars["preset"].set(display)
+            compress.option_vars["target_mb"].set(
+                str(self.cfg.get("compress.target_size_mb", 4.5)))
         self._set_status("Advanced settings saved.")
         self.log_line("Advanced settings saved.")
 
@@ -3579,11 +3613,11 @@ class App(ttkb.Window if ttkb else tk.Tk):
         Loading it on the worker means the card is up first and the PDF engine is
         read from disk while the user is already choosing their files.
         """
-        from .pipeline import Pipeline
-
         logger = None
         handler = None
         try:
+            from .pipeline import Pipeline
+
             reset_logger()
             logger = get_logger(self.cfg.resolve("paths.logs"), verbose=True)
             handler = GuiLogHandler(
@@ -4029,11 +4063,7 @@ ADVANCED_SPEC: tuple[tuple[str, tuple], ...] = (
         ("float", "Shrink harder if still too big", "compress.target_size_mb",
          None, "The app tries harder until each file is under this size",
          "scale"),
-        # The next three were in config.json and are still read by
-        # pipeline.py, but the rebuilt settings screen had dropped them
-        # entirely.  Restored here in outcome language: engine is a safety
-        # valve, level only matters if engine is set to "levels", and the
-        # number format is the one thing a portal can reject.
+        # The next two remain available as a safety valve for compression.
         ("choice", "Which shrinking method", "compress.engine", (
             ("adaptive", "The automatic one (recommended)"),
             ("levels", "The older one - only if a filing comes out wrong"),
@@ -4042,14 +4072,14 @@ ADVANCED_SPEC: tuple[tuple[str, tuple], ...] = (
         ("int", "Strength, if using the older method", "compress.level",
          (0, 4), "0 = try each strength in turn, 1-4 = fix one strength. "
                  "Ignored by the automatic method", "sliders"),
-        ("format", "What the page number says", "pagination.format",
-         PAGE_FORMAT_PRESETS,
-         "Pick a finished line. The words around the number are set for you; "
-         "choose 'Write my own...' only if you need something unusual", "hash"),
     )),
     ("Page numbers", (
         ("bool", "Add page numbers", "pagination.enabled",
          None, "Prints 'Page 1 of 20' on every page", "hash"),
+        ("format", "What the page number says", "pagination.format",
+         PAGE_FORMAT_PRESETS,
+         "Pick a finished line. The words around the number are set for you; "
+         "choose 'Write my own...' only if you need something unusual", "hash"),
         ("choice", "Where the numbers go", "pagination.position", (
             ("bottom-center", "Bottom centre"), ("bottom-right", "Bottom right"),
             ("bottom-left", "Bottom left"), ("top-right", "Top right"),
@@ -4079,8 +4109,6 @@ ADVANCED_SPEC: tuple[tuple[str, tuple], ...] = (
         ("int", "Leave the first pages blank", "pagination.skip_first_pages",
          (0, 20), "Useful when page 1 is a cover that should stay clean",
          "minus"),
-        # pagination.format is set on the "Size & quality" tab next to the
-        # other compression controls, so it is not repeated here.
         ("bool", "Add a contents page", "cover_page.enabled",
          None, "Lists every document and the page it starts on", "book"),
         ("text", "Heading on the contents page", "cover_page.subtitle",
@@ -4095,10 +4123,9 @@ ADVANCED_SPEC: tuple[tuple[str, tuple], ...] = (
          None, "Stamps your bank's seal onto the pages", "tag"),
         ("file", "Seal image", "paths.stamp_image", None,
          "A transparent PNG looks cleanest", "image"),
-        ("choice", "Which pages get the seal", "stamp.pages", (
-            ("all", "Every page"), ("first", "First only"),
-            ("last", "Last only"), ("1,3,5-9", "Only some"),
-        ), "'Only some' then lists the pages, e.g. 1,3,5-9", "document"),
+        ("text", "Which pages get the seal", "stamp.pages", None,
+         "Use all, first, last, odd, even, or specific pages such as 1,3,5-9",
+         "document"),
         ("choice", "Where the seal sits", "stamp.position", (
             ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left"),
             ("bottom-center", "Bottom centre"), ("top-right", "Top right"),
@@ -4196,6 +4223,16 @@ class AdvancedDialog(tk.Toplevel):
         wrap.pack(fill="both", expand=True)
         self._build_search(wrap)
 
+        # Reserve a fixed footer before the expanding notebook is packed.
+        buttons = tk.Frame(wrap, bg=BG)
+        buttons.pack(side="bottom", fill="x", pady=(px(14), 0))
+        IconButton(buttons, "Save and continue", self._save, icon="check",
+                   primary=True, background=BG, surface=ACCENT).pack(side="right")
+        IconButton(buttons, "Cancel", self.destroy, background=BG,
+                   surface=SURFACE).pack(side="right", padx=px(10))
+        IconButton(buttons, "Undo all my changes", self._restore, icon="cross",
+                   background=BG, surface=SURFACE).pack(side="left")
+
         book = ttk.Notebook(wrap)
         book.pack(fill="both", expand=True)
         self.book = book
@@ -4234,15 +4271,6 @@ class AdvancedDialog(tk.Toplevel):
             for index, spec in enumerate(rows):
                 self._add_row(body, index + row_offset, spec)
         self._connect_page_number_preview()
-
-        buttons = tk.Frame(wrap, bg=BG)
-        buttons.pack(fill="x", pady=(px(14), 0))
-        IconButton(buttons, "Save these settings", self._save, icon="check",
-                   primary=True, background=BG, surface=ACCENT).pack(side="right")
-        IconButton(buttons, "Cancel", self.destroy, background=BG,
-                   surface=SURFACE).pack(side="right", padx=px(10))
-        IconButton(buttons, "Undo all my changes", self._restore, icon="cross",
-                   background=BG, surface=SURFACE).pack(side="left")
 
     def _build_search(self, parent: ttk.Frame) -> None:
         """A search box: with ~40 settings, finding beats scrolling."""
@@ -4424,7 +4452,7 @@ class AdvancedDialog(tk.Toplevel):
             # used to mean an empty page number, so fall back to the usual
             # line rather than showing a blank box the user has to fix.
             var = tk.StringVar(
-                value=str(current or "Page {page} of {total}"))
+                value=str(current or "{page}"))
             control = Field(
                 parent, label, hint=hint or "", background=CARD,
                 factory=lambda field: build_format_picker(

@@ -327,6 +327,8 @@ class Pipeline:
 
         # ------------------------------------------------------------ 3. cover
         if "cover" in wanted and self.cfg.get("cover_page.enabled"):
+            if self.progress:
+                self.progress("[cover] adding the contents page")
             cover_target = work / "02_cover.pdf"
             with StepTimer(LOGGER, "cover / index page") as timer:
                 new_pages = pdf_ops.add_cover_page(
@@ -444,7 +446,7 @@ class Pipeline:
             with StepTimer(LOGGER, "pagination") as timer:
                 pag = pdf_ops.add_page_numbers(
                     current, page_target,
-                    fmt=str(self.cfg.get("pagination.format", "Page {page} of {total}")),
+                    fmt=str(self.cfg.get("pagination.format", "{page}")),
                     position=str(self.cfg.get("pagination.position", "bottom-center")),
                     font=str(self._pagination_font()),
                     font_size=float(self.cfg.get("pagination.font_size", 9) or 9),
@@ -584,6 +586,8 @@ class Pipeline:
             outputs = [final_path]
 
         # ----------------------------------------------------------- 9. finish
+        if self.progress:
+            self.progress("[finish] saving the final filing")
         report.finished = datetime.now()
         report.outputs = outputs
         # Warnings describe work that needs a person to review (for example,

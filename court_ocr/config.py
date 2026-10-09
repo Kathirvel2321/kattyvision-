@@ -90,7 +90,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "pagination": {
         "enabled": True,
-        "format": "Page {page} of {total}",
+        "format": "{page}",
         "position": "bottom-center",
         "font": "helv",
         "font_file": "",

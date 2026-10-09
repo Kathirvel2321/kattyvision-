@@ -1894,7 +1894,7 @@ class PageNumberPreview(tk.Frame):
 
     def __init__(self, master: tk.Misc, **_kwargs) -> None:
         super().__init__(master, bg=CARD)
-        self.format = "Page {page} of {total}"
+        self.format = "{page}"
         self.position = "bottom-right"
         self.font_size = 9.0
         self.font = "helv"

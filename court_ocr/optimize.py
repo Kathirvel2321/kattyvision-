@@ -46,7 +46,7 @@ ProgressFn = Callable[[str], None]
 MIN_PAGE_COVER = 0.60      # an image covering less than this is an overlay/seal
 PROBE_DPI = 120            # cheap render used only to classify a page
 SATURATION_CUTOFF = 45     # HSV saturation above this counts as real colour
-COLOUR_SHARE_PCT = 2.0     # % of coloured pixels that makes a page "colour"
+COLOUR_SHARE_PCT = 0.05    # preserve small but important colored seals/signatures
 PAPER_LEVEL = 205          # gray value that counts as paper white
 WHITE_SHARE_PCT = 85.0     # % white that makes a page "text on paper"
 MIDTONE_SHARE_PCT = 12.0   # % mid-tones that means photos/shading/screenshots
@@ -79,8 +79,8 @@ QUALITY_PRESETS: tuple[QualityPreset, ...] = (
                   "400 dpi text, 250 dpi colour, q88",
                   text_dpi=400, photo_dpi=250, photo_quality=88, gray_quality=84),
     QualityPreset("balanced", "Balanced (recommended)",
-                  "300 dpi text, 200 dpi colour, q85",
-                  text_dpi=300, photo_dpi=200, photo_quality=85, gray_quality=80),
+                  "300 dpi text, 300 dpi colour, q85",
+                  text_dpi=300, photo_dpi=300, photo_quality=85, gray_quality=88),
     QualityPreset("small", "Small - weakest portal limit",
                   "300 dpi text, 150 dpi colour, q78",
                   text_dpi=300, photo_dpi=150, photo_quality=78, gray_quality=72),

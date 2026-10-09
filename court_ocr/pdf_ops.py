@@ -575,7 +575,7 @@ def add_page_numbers(
     doc_path: str | Path,
     out_path: str | Path,
     *,
-    fmt: str = "Page {page} of {total}",
+    fmt: str = "{page}",
     position: str = "bottom-center",
     font: str = "helv",
     font_file: str | None = None,
@@ -650,6 +650,8 @@ def add_page_numbers(
         else:
             used_font = chosen
         for index in range(skip_first, last):
+            if progress:
+                progress(f"[pagination] {index + 1}/{last} pages")
             page = doc[index]
             if font_file_path is not None:
                 # Registration is per PAGE, not per document: PyMuPDF has
@@ -684,7 +686,7 @@ def add_page_numbers(
                 LOGGER.warning("[paginate] layout %r could not be filled in "
                                "(%s) - falling back to 'Page X of Y'",
                                fmt, exc)
-                text = "Page {page} of {total}".format(
+                text = "{page}".format(
                     page=_label(number, style),
                     total=_label(counted, style),
                 )
@@ -707,8 +709,6 @@ def add_page_numbers(
             except Exception as exc:
                 LOGGER.warning("[paginate] page %d failed: %s", index + 1, exc)
                 result.ok = False
-            if progress and (index + 1) % 50 == 0:
-                progress(f"[pagination] {index + 1}/{last} pages")
         _save_compact(doc, out_path)
     return result
 
@@ -1070,6 +1070,8 @@ def split_pdf(
             part=index, parts=(0 if part_of_total else ""),
         )
         dest = out_dir / name
+        if progress:
+            progress(f"[split] writing part {index}: pages {first}-{last}")
         _write_part(doc_path, first, last, dest, starts, title=f"{case} - part {index}")
         size = dest.stat().st_size / MB
 
@@ -1170,6 +1172,10 @@ def split_pdf_at_cuts(
         if last_file != first_file:
             last_page = int(sources[first_file][1] or first_page + 1) - 1
             end = begin + (last_page - first_page)
+        count = end - begin + 1
+        if progress:
+            progress(f"[split] part {index}: {count} page(s) "
+                     f"from {path.name}")
         try:
             starts: dict[int, str] = {}
             if keep_bookmark_boundaries:
@@ -1178,10 +1184,6 @@ def split_pdf_at_cuts(
                         starts = _bookmark_starts(doc)
                 except Exception:
                     starts = {}
-            count = end - begin + 1
-            if progress:
-                progress(f"[split] part {index}: {count} page(s) "
-                         f"from {path.name}")
             name = apply_template(name_template, case=path.stem, index=index,
                                   pages=count, start=first_page + 1,
                                   end=last_page + 1, total=len(flat),

@@ -259,6 +259,8 @@ def apply_stamp(
     with pymupdf.open(doc_path) as doc:
         targets = parse_page_spec(pages, doc.page_count)
         for index in targets:
+            if progress:
+                progress(f"[stamp] {index + 1}/{doc.page_count} pages")
             page = doc[index]
             if prepared is not None:
                 rect = seal_rect(page, width_percent, _aspect(prepared),
@@ -273,8 +275,6 @@ def apply_stamp(
                     LOGGER.warning("[stamp] page %d image failed: %s", index + 1, exc)
             if text_on and _stamp_text(page, text):
                 result.text_lines += 1
-            if progress and (index + 1) % 25 == 0:
-                progress(f"[stamp] {index + 1}/{doc.page_count} pages")
 
         _save_compact(doc, out_path)
 

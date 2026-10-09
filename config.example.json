@@ -79,7 +79,7 @@
   },
   "pagination": {
     "enabled": true,
-    "format": "Page {page} of {total}",
+    "format": "{page}",
     "position": "bottom-center",
     "font": "helv",
     "font_size": 9,
